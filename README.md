@@ -20,6 +20,7 @@ docker compose up --build
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
+pip install -e .
 python -m weather_patterns run-pipeline --csv hly4935_subset.csv --output-dir artifacts
 ```
 

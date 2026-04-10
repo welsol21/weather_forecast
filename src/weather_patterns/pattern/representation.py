@@ -7,7 +7,7 @@ import pandas as pd
 
 from weather_patterns.config import HazardConfig, PipelineConfig
 from weather_patterns.models import ExtremaEvent, ExtremaWindow, PatternWindow, PeakEvent, TimePlaceholders
-from weather_patterns.signal.processing import safe_corr, safe_variance
+from weather_patterns.signal.processing import safe_variance
 
 
 INTRA_FEATURES = [
@@ -76,39 +76,55 @@ def _delta(series: pd.Series, steps: int) -> float:
     return float(clean.iloc[-1] - clean.iloc[-(steps + 1)])
 
 
+def _delta_array(values: np.ndarray, steps: int) -> float:
+    clean = values[np.isfinite(values)]
+    if clean.size == 0:
+        return 0.0
+    if clean.size <= steps:
+        return float(clean[-1] - clean[0])
+    return float(clean[-1] - clean[-(steps + 1)])
+
+
 def build_intra_matrix(
     window_frame: pd.DataFrame,
     window_events: list[ExtremaEvent],
     channels: list[str],
 ) -> pd.DataFrame:
-    matrix = pd.DataFrame(index=INTRA_FEATURES, columns=channels, dtype=float)
+    matrix = np.zeros((len(INTRA_FEATURES), len(channels)), dtype=float)
+    feature_index = {name: index for index, name in enumerate(INTRA_FEATURES)}
+    channel_index = {name: index for index, name in enumerate(channels)}
+    event_stats: dict[str, tuple[float, float]] = {}
     for channel in channels:
-        series = pd.to_numeric(window_frame[f"smoothed_{channel}"], errors="coerce")
-        diff2 = pd.to_numeric(window_frame[f"diff2_{channel}"], errors="coerce")
         channel_events = [event for event in window_events if event.channel == channel]
-        clean = series.dropna()
-        matrix.loc["current_value", channel] = float(clean.iloc[-1]) if not clean.empty else 0.0
-        matrix.loc["delta_1", channel] = _delta(series, 1)
-        matrix.loc["delta_6", channel] = _delta(series, 6)
-        matrix.loc["delta_24", channel] = _delta(series, 24)
-        matrix.loc["second_diff", channel] = float(diff2.dropna().iloc[-1]) if not diff2.dropna().empty else 0.0
-        matrix.loc["mean_on_window", channel] = float(clean.mean()) if not clean.empty else 0.0
-        matrix.loc["variance_on_window", channel] = safe_variance(series)
-        matrix.loc["integral_on_window", channel] = float(np.nansum(clean.to_numpy(dtype=float))) if not clean.empty else 0.0
-        matrix.loc["max_on_window", channel] = float(clean.max()) if not clean.empty else 0.0
-        matrix.loc["min_on_window", channel] = float(clean.min()) if not clean.empty else 0.0
-        matrix.loc["range_on_window", channel] = float(clean.max() - clean.min()) if not clean.empty else 0.0
-        matrix.loc["extrema_count", channel] = float(len(channel_events))
-        matrix.loc["extrema_amplitude_sum", channel] = float(sum(abs(event.amplitude) for event in channel_events))
-    return matrix
+        event_stats[channel] = (
+            float(len(channel_events)),
+            float(sum(abs(event.amplitude) for event in channel_events)),
+        )
 
+    for channel in channels:
+        column_index = channel_index[channel]
+        series = pd.to_numeric(window_frame[f"smoothed_{channel}"], errors="coerce").to_numpy(dtype=float)
+        diff2 = pd.to_numeric(window_frame[f"diff2_{channel}"], errors="coerce").to_numpy(dtype=float)
+        clean = series[np.isfinite(series)]
+        clean_diff2 = diff2[np.isfinite(diff2)]
+        extrema_count, extrema_amplitude_sum = event_stats[channel]
+        maximum = float(clean.max()) if clean.size else 0.0
+        minimum = float(clean.min()) if clean.size else 0.0
 
-def _max_lag_correlation(a: pd.Series, b: pd.Series, max_lag: int) -> float:
-    correlations = [safe_corr(a, b)]
-    for lag in range(1, max_lag + 1):
-        correlations.append(safe_corr(a.iloc[lag:], b.iloc[:-lag]))
-        correlations.append(safe_corr(a.iloc[:-lag], b.iloc[lag:]))
-    return float(max(correlations, key=abs))
+        matrix[feature_index["current_value"], column_index] = float(clean[-1]) if clean.size else 0.0
+        matrix[feature_index["delta_1"], column_index] = _delta_array(series, 1)
+        matrix[feature_index["delta_6"], column_index] = _delta_array(series, 6)
+        matrix[feature_index["delta_24"], column_index] = _delta_array(series, 24)
+        matrix[feature_index["second_diff"], column_index] = float(clean_diff2[-1]) if clean_diff2.size else 0.0
+        matrix[feature_index["mean_on_window"], column_index] = float(clean.mean()) if clean.size else 0.0
+        matrix[feature_index["variance_on_window"], column_index] = safe_variance(pd.Series(series))
+        matrix[feature_index["integral_on_window"], column_index] = float(np.nansum(clean)) if clean.size else 0.0
+        matrix[feature_index["max_on_window"], column_index] = maximum
+        matrix[feature_index["min_on_window"], column_index] = minimum
+        matrix[feature_index["range_on_window"], column_index] = maximum - minimum if clean.size else 0.0
+        matrix[feature_index["extrema_count"], column_index] = extrema_count
+        matrix[feature_index["extrema_amplitude_sum"], column_index] = extrema_amplitude_sum
+    return pd.DataFrame(matrix, index=INTRA_FEATURES, columns=channels)
 
 
 def _array_corr(a: np.ndarray, b: np.ndarray) -> float:
@@ -117,9 +133,13 @@ def _array_corr(a: np.ndarray, b: np.ndarray) -> float:
         return 0.0
     left = a[valid_mask]
     right = b[valid_mask]
-    if np.isclose(left.std(), 0.0) or np.isclose(right.std(), 0.0):
+    left_centered = left - float(left.mean())
+    right_centered = right - float(right.mean())
+    left_scale = float(np.sqrt(np.dot(left_centered, left_centered)))
+    right_scale = float(np.sqrt(np.dot(right_centered, right_centered)))
+    if np.isclose(left_scale, 0.0) or np.isclose(right_scale, 0.0):
         return 0.0
-    return float(np.corrcoef(left, right)[0, 1])
+    return float(np.dot(left_centered, right_centered) / (left_scale * right_scale))
 
 
 def _max_lag_correlation_array(a: np.ndarray, b: np.ndarray, max_lag: int) -> float:
@@ -138,14 +158,19 @@ def _synchronous_extrema_metrics(
     if not events_a or not events_b:
         return 0.0, 0.0
     lags: list[int] = []
+    indices_b = [event.index for event in events_b]
+    right_pointer = 0
     for event_a in events_a:
-        matching = [
-            abs(event_a.index - event_b.index)
-            for event_b in events_b
-            if abs(event_a.index - event_b.index) <= tolerance_steps
-        ]
-        if matching:
-            lags.append(min(matching))
+        while right_pointer < len(indices_b) and indices_b[right_pointer] < event_a.index - tolerance_steps:
+            right_pointer += 1
+        best_lag: int | None = None
+        probe = right_pointer
+        while probe < len(indices_b) and indices_b[probe] <= event_a.index + tolerance_steps:
+            lag = abs(event_a.index - indices_b[probe])
+            best_lag = lag if best_lag is None else min(best_lag, lag)
+            probe += 1
+        if best_lag is not None:
+            lags.append(best_lag)
     if not lags:
         return 0.0, 0.0
     return float(len(lags)), float(np.mean(lags))
@@ -159,7 +184,8 @@ def build_inter_matrix(
     event_match_tolerance_steps: int,
 ) -> pd.DataFrame:
     pair_labels = [f"{left}__{right}" for left, right in combinations(channels, 2)]
-    matrix = pd.DataFrame(index=INTER_FEATURES, columns=pair_labels, dtype=float)
+    matrix = np.zeros((len(INTER_FEATURES), len(pair_labels)), dtype=float)
+    feature_index = {name: index for index, name in enumerate(INTER_FEATURES)}
     series_by_channel = {
         channel: pd.to_numeric(window_frame[f"smoothed_{channel}"], errors="coerce").to_numpy(dtype=float)
         for channel in channels
@@ -174,8 +200,7 @@ def build_inter_matrix(
         channel: [event for event in window_events if event.channel == channel]
         for channel in channels
     }
-    for left, right in combinations(channels, 2):
-        label = f"{left}__{right}"
+    for pair_index, (left, right) in enumerate(combinations(channels, 2)):
         left_series = series_by_channel[left]
         right_series = series_by_channel[right]
         left_diff = diff_mean_by_channel[left]
@@ -187,16 +212,16 @@ def build_inter_matrix(
             right_events,
             event_match_tolerance_steps,
         )
-        matrix.loc["correlation", label] = _array_corr(left_series, right_series)
-        matrix.loc["lag_correlation", label] = _max_lag_correlation_array(
+        matrix[feature_index["correlation"], pair_index] = _array_corr(left_series, right_series)
+        matrix[feature_index["lag_correlation"], pair_index] = _max_lag_correlation_array(
             left_series,
             right_series,
             correlation_lag_steps,
         )
-        matrix.loc["slope_ratio", label] = float(left_diff / right_diff) if right_diff else 0.0
-        matrix.loc["synchronous_extrema_count", label] = sync_count
-        matrix.loc["mean_event_lag", label] = mean_lag
-    return matrix
+        matrix[feature_index["slope_ratio"], pair_index] = float(left_diff / right_diff) if right_diff else 0.0
+        matrix[feature_index["synchronous_extrema_count"], pair_index] = sync_count
+        matrix[feature_index["mean_event_lag"], pair_index] = mean_lag
+    return pd.DataFrame(matrix, index=INTER_FEATURES, columns=pair_labels)
 
 
 def _compound_event_flag(
@@ -222,31 +247,38 @@ def build_peak_hazard_matrix(
     upper_thresholds: dict[str, float],
     lower_thresholds: dict[str, float],
 ) -> pd.DataFrame:
-    matrix = pd.DataFrame(index=PEAK_HAZARD_FEATURES, columns=channels, dtype=float)
+    matrix = np.zeros((len(PEAK_HAZARD_FEATURES), len(channels)), dtype=float)
+    feature_index = {name: index for index, name in enumerate(PEAK_HAZARD_FEATURES)}
+    channel_index = {name: index for index, name in enumerate(channels)}
     compound_flag = _compound_event_flag(window_frame, upper_thresholds)
+    peaks_by_channel = {
+        channel: [peak for peak in window_peaks if peak.channel == channel]
+        for channel in channels
+    }
     for channel in channels:
+        column_index = channel_index[channel]
         series = pd.to_numeric(window_frame[channel], errors="coerce").dropna()
-        peaks = [peak for peak in window_peaks if peak.channel == channel]
+        peaks = peaks_by_channel[channel]
         upper = upper_thresholds[channel]
         lower = lower_thresholds[channel]
         duration_over = float((series > upper).sum()) if not series.empty else 0.0
         upper_tail = float((series - upper).clip(lower=0).sum()) if not series.empty else 0.0
         lower_tail = float((lower - series).clip(lower=0).sum()) if not series.empty else 0.0
         cumulative_risk = upper_tail + lower_tail + duration_over
-        matrix.loc["number_of_peaks", channel] = float(len(peaks))
-        matrix.loc["max_peak_value", channel] = float(max((peak.peak_value for peak in peaks), default=0.0))
-        matrix.loc["mean_prominence", channel] = float(np.mean([peak.prominence for peak in peaks])) if peaks else 0.0
-        matrix.loc["max_prominence", channel] = float(max((peak.prominence for peak in peaks), default=0.0))
-        matrix.loc["mean_peak_width", channel] = float(np.mean([peak.width_steps for peak in peaks])) if peaks else 0.0
-        matrix.loc["max_peak_width", channel] = float(max((peak.width_steps for peak in peaks), default=0.0))
-        matrix.loc["max_rise_slope", channel] = float(max((peak.rise_slope for peak in peaks), default=0.0))
-        matrix.loc["duration_over_upper_threshold", channel] = duration_over
-        matrix.loc["upper_tail_excess", channel] = upper_tail
-        matrix.loc["lower_tail_excess", channel] = lower_tail
-        matrix.loc["cumulative_risk", channel] = cumulative_risk
-        matrix.loc["hazard_flag", channel] = float(duration_over > 0 or cumulative_risk > 0)
-        matrix.loc["compound_event_flag", channel] = compound_flag
-    return matrix
+        matrix[feature_index["number_of_peaks"], column_index] = float(len(peaks))
+        matrix[feature_index["max_peak_value"], column_index] = float(max((peak.peak_value for peak in peaks), default=0.0))
+        matrix[feature_index["mean_prominence"], column_index] = float(np.mean([peak.prominence for peak in peaks])) if peaks else 0.0
+        matrix[feature_index["max_prominence"], column_index] = float(max((peak.prominence for peak in peaks), default=0.0))
+        matrix[feature_index["mean_peak_width"], column_index] = float(np.mean([peak.width_steps for peak in peaks])) if peaks else 0.0
+        matrix[feature_index["max_peak_width"], column_index] = float(max((peak.width_steps for peak in peaks), default=0.0))
+        matrix[feature_index["max_rise_slope"], column_index] = float(max((peak.rise_slope for peak in peaks), default=0.0))
+        matrix[feature_index["duration_over_upper_threshold"], column_index] = duration_over
+        matrix[feature_index["upper_tail_excess"], column_index] = upper_tail
+        matrix[feature_index["lower_tail_excess"], column_index] = lower_tail
+        matrix[feature_index["cumulative_risk"], column_index] = cumulative_risk
+        matrix[feature_index["hazard_flag"], column_index] = float(duration_over > 0 or cumulative_risk > 0)
+        matrix[feature_index["compound_event_flag"], column_index] = compound_flag
+    return pd.DataFrame(matrix, index=PEAK_HAZARD_FEATURES, columns=channels)
 
 
 def build_time_placeholders(
@@ -297,7 +329,7 @@ def build_pattern_window(
     upper_thresholds: dict[str, float],
     lower_thresholds: dict[str, float],
 ) -> PatternWindow:
-    window_frame = signal_frame.iloc[extrema_window.start_index : extrema_window.end_index + 1].copy()
+    window_frame = signal_frame.iloc[extrema_window.start_index : extrema_window.end_index + 1]
     intra = build_intra_matrix(window_frame, extrema_window.events, channels)
     inter = build_inter_matrix(
         window_frame,

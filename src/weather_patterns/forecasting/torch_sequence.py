@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -130,6 +131,58 @@ class TorchSequencePredictor(SequencePredictor):
                 loss = loss_fn(predicted, batch_target)
                 loss.backward()
                 optimizer.step()
+
+    def save_checkpoint(self, path: str | Path) -> Path:
+        if self._model is None or self._feature_dim is None or self._forecast_window_count is None:
+            raise RuntimeError("The predictor must be trained before it can be saved.")
+        if self._history_window_count is None:
+            raise RuntimeError("Missing history window count for checkpoint export.")
+
+        self._lazy_import_torch()
+        torch = self._torch
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "state_dict": self._model.state_dict(),
+                "feature_dim": self._feature_dim,
+                "forecast_window_count": self._forecast_window_count,
+                "history_window_count": self._history_window_count,
+                "model_config": {
+                    "hidden_size": self.model_config.hidden_size,
+                    "num_layers": self.model_config.num_layers,
+                    "dropout": self.model_config.dropout,
+                    "learning_rate": self.model_config.learning_rate,
+                    "weight_decay": self.model_config.weight_decay,
+                    "batch_size": self.model_config.batch_size,
+                    "epochs": self.model_config.epochs,
+                    "random_seed": self.model_config.random_seed,
+                },
+            },
+            destination,
+        )
+        return destination
+
+    @classmethod
+    def load_checkpoint(
+        cls,
+        path: str | Path,
+        model_config: SequenceModelConfig,
+        compute_config: ComputeConfig,
+    ) -> "TorchSequencePredictor":
+        predictor = cls(model_config=model_config, compute_config=compute_config)
+        predictor._lazy_import_torch()
+        torch = predictor._torch
+        checkpoint = torch.load(Path(path), map_location=predictor.device)
+        predictor._build_model(
+            history_window_count=int(checkpoint["history_window_count"]),
+            feature_dim=int(checkpoint["feature_dim"]),
+            forecast_window_count=int(checkpoint["forecast_window_count"]),
+        )
+        predictor._model.load_state_dict(checkpoint["state_dict"])
+        predictor._history_window_count = int(checkpoint["history_window_count"])
+        predictor._model.eval()
+        return predictor
 
     def predict(
         self,

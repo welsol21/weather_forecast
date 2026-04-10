@@ -23,6 +23,15 @@ pip install -r requirements.txt
 python -m weather_patterns run-pipeline --csv hly4935_subset.csv --output-dir artifacts
 ```
 
+## GPU-Only Model Commands
+
+These commands are intended for environments with CUDA-enabled PyTorch. The repository does not pin `torch` in the base requirements because the exact wheel depends on the target CUDA stack.
+
+```bash
+python -m weather_patterns train-sequence-model --csv hly4935_subset.csv --max-rows 240 --checkpoint-path artifacts/sequence_predictor.pt
+python -m weather_patterns predict-sequence --csv hly4935_subset.csv --max-rows 240 --checkpoint-path artifacts/sequence_predictor.pt
+```
+
 ## What the pipeline does
 
 1. Loads and cleans the hourly weather CSV.

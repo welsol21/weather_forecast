@@ -7,3 +7,5 @@ artifacts_docker/
 *.pyc
 *.pyo
 *.pyd
+.codex/
+.codex

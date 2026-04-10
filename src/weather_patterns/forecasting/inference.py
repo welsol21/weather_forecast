@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from typing import Any
 
 from weather_patterns.config import PipelineConfig
 from weather_patterns.forecasting.torch_sequence import TorchSequencePredictor
@@ -25,3 +26,16 @@ def predict_future_pattern_sequence(
         horizon_steps=config.window.forecast_horizon_steps,
         prototypes=artifacts.discovery_result.prototypes,
     )
+
+
+def summarize_forecast_result(result: ForecastResult) -> dict[str, Any]:
+    return {
+        "forecast_time": result.forecast_time.isoformat(),
+        "horizon_steps": result.horizon_steps,
+        "predicted_window_count": result.predicted_window_count,
+        "predicted_pattern_ids": result.predicted_pattern_ids,
+        "predicted_pattern_matrix_shape": list(result.predicted_pattern_matrix.shape),
+        "predicted_values_channels": sorted(result.predicted_values.keys()),
+        "predicted_time_placeholder_count": len(result.predicted_time_placeholders),
+        "predicted_peak_hazard_count": len(result.predicted_peak_hazard),
+    }

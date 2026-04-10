@@ -112,6 +112,31 @@ def _window_channel_arrays(
     return raw_series, smoothed_series, diff1_series, diff2_series
 
 
+def build_signal_channel_arrays(
+    signal_frame: pd.DataFrame,
+    channels: list[str],
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
+    return _window_channel_arrays(signal_frame, channels)
+
+
+def slice_signal_channel_arrays(
+    raw_series: dict[str, np.ndarray],
+    smoothed_series: dict[str, np.ndarray],
+    diff1_series: dict[str, np.ndarray],
+    diff2_series: dict[str, np.ndarray],
+    channels: list[str],
+    start_index: int,
+    end_index: int,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
+    end = end_index + 1
+    return (
+        {channel: raw_series[channel][start_index:end] for channel in channels},
+        {channel: smoothed_series[channel][start_index:end] for channel in channels},
+        {channel: diff1_series[channel][start_index:end] for channel in channels},
+        {channel: diff2_series[channel][start_index:end] for channel in channels},
+    )
+
+
 def _group_events_by_channel(
     window_events: list[ExtremaEvent],
     channels: list[str],
@@ -377,13 +402,20 @@ def build_inter_matrix(
 def _compound_event_flag(
     window_frame: pd.DataFrame,
     upper_thresholds: dict[str, float],
+    raw_series: dict[str, np.ndarray] | None = None,
 ) -> float:
-    if "wind_speed" not in window_frame.columns or "rainfall" not in window_frame.columns:
+    if raw_series is None and ("wind_speed" not in window_frame.columns or "rainfall" not in window_frame.columns):
         return 0.0
     wind_threshold = upper_thresholds.get("wind_speed", 0.0)
     rain_threshold = upper_thresholds.get("rainfall", 0.0)
-    wind = pd.to_numeric(window_frame["wind_speed"], errors="coerce").to_numpy(dtype=float)
-    rain = pd.to_numeric(window_frame["rainfall"], errors="coerce").to_numpy(dtype=float)
+    if raw_series is not None:
+        wind = raw_series.get("wind_speed")
+        rain = raw_series.get("rainfall")
+        if wind is None or rain is None:
+            return 0.0
+    else:
+        wind = pd.to_numeric(window_frame["wind_speed"], errors="coerce").to_numpy(dtype=float)
+        rain = pd.to_numeric(window_frame["rainfall"], errors="coerce").to_numpy(dtype=float)
     wind = np.nan_to_num(wind, nan=0.0)
     rain = np.nan_to_num(rain, nan=0.0)
     return float(np.any((wind >= wind_threshold) & (rain >= rain_threshold)))
@@ -401,7 +433,7 @@ def build_peak_hazard_matrix(
     matrix = np.zeros((len(PEAK_HAZARD_FEATURES), len(channels)), dtype=float)
     feature_index = {name: index for index, name in enumerate(PEAK_HAZARD_FEATURES)}
     channel_index = {name: index for index, name in enumerate(channels)}
-    compound_flag = _compound_event_flag(window_frame, upper_thresholds)
+    compound_flag = _compound_event_flag(window_frame, upper_thresholds, raw_series=raw_series)
     active_peaks_by_channel = peaks_by_channel or _group_peaks_by_channel(window_peaks, channels)
     for channel in channels:
         column_index = channel_index[channel]
@@ -479,9 +511,14 @@ def build_pattern_window(
     config: PipelineConfig,
     upper_thresholds: dict[str, float],
     lower_thresholds: dict[str, float],
+    raw_series: dict[str, np.ndarray] | None = None,
+    smoothed_series: dict[str, np.ndarray] | None = None,
+    diff1_series: dict[str, np.ndarray] | None = None,
+    diff2_series: dict[str, np.ndarray] | None = None,
 ) -> PatternWindow:
     window_frame = signal_frame.iloc[extrema_window.start_index : extrema_window.end_index + 1]
-    raw_series, smoothed_series, diff1_series, diff2_series = _window_channel_arrays(window_frame, channels)
+    if raw_series is None or smoothed_series is None or diff1_series is None or diff2_series is None:
+        raw_series, smoothed_series, diff1_series, diff2_series = _window_channel_arrays(window_frame, channels)
     events_by_channel = _group_events_by_channel(extrema_window.events, channels)
     peaks_by_channel = _group_peaks_by_channel(extrema_window.peaks, channels)
     intra = build_intra_matrix(

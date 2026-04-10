@@ -14,6 +14,7 @@ from weather_patterns.events.peaks import detect_peaks
 from weather_patterns.forecasting.samples import build_forecast_samples
 from weather_patterns.models import PipelineArtifacts
 from weather_patterns.pattern.representation import build_pattern_window, compute_channel_thresholds
+from weather_patterns.pattern.representation import build_signal_channel_arrays, slice_signal_channel_arrays
 from weather_patterns.pattern.windows import build_extrema_windows
 from weather_patterns.signal.processing import build_signal_frame
 
@@ -46,6 +47,10 @@ def run_pipeline(csv_path: str | Path, config: PipelineConfig | None = None) -> 
         dataset.channel_columns,
         active_config.hazard,
     )
+    raw_series, smoothed_series, diff1_series, diff2_series = build_signal_channel_arrays(
+        signal_frame,
+        dataset.channel_columns,
+    )
     pattern_windows = [
         build_pattern_window(
             signal_frame,
@@ -54,6 +59,15 @@ def run_pipeline(csv_path: str | Path, config: PipelineConfig | None = None) -> 
             active_config,
             upper_thresholds,
             lower_thresholds,
+            *slice_signal_channel_arrays(
+                raw_series,
+                smoothed_series,
+                diff1_series,
+                diff2_series,
+                dataset.channel_columns,
+                extrema_window.start_index,
+                extrema_window.end_index,
+            ),
         )
         for extrema_window in extrema_windows
     ]

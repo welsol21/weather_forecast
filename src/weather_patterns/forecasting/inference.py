@@ -34,13 +34,37 @@ def predict_future_pattern_sequence(
 
 
 def summarize_forecast_result(result: ForecastResult) -> dict[str, Any]:
+    value_frame = result.to_value_frame()
+    interval_value_frame = result.to_interval_value_frame()
+    preview_rows = (
+        value_frame.head(3).round(4).reset_index().assign(
+            timestamp=lambda frame: frame["timestamp"].astype(str)
+        ).to_dict(orient="records")
+        if not value_frame.empty
+        else []
+    )
+    interval_preview_rows = (
+        interval_value_frame.head(5).round(4).reset_index().assign(
+            timestamp=lambda frame: frame["timestamp"].astype(str)
+        ).to_dict(orient="records")
+        if not interval_value_frame.empty
+        else []
+    )
     return {
         "forecast_time": result.forecast_time.isoformat(),
         "horizon_steps": result.horizon_steps,
         "predicted_window_count": result.predicted_window_count,
         "predicted_pattern_ids": result.predicted_pattern_ids,
         "predicted_pattern_matrix_shape": list(result.predicted_pattern_matrix.shape),
+        "predicted_timestamp_count": len(result.predicted_timestamps),
+        "predicted_timestamp_start": result.predicted_timestamps[0].isoformat() if result.predicted_timestamps else None,
+        "predicted_timestamp_end": result.predicted_timestamps[-1].isoformat() if result.predicted_timestamps else None,
         "predicted_values_channels": sorted(result.predicted_values.keys()),
+        "predicted_values_preview": preview_rows,
+        "predicted_interval_timestamp_count": len(result.predicted_interval_timestamps),
+        "predicted_interval_timestamp_start": result.predicted_interval_timestamps[0].isoformat() if result.predicted_interval_timestamps else None,
+        "predicted_interval_timestamp_end": result.predicted_interval_timestamps[-1].isoformat() if result.predicted_interval_timestamps else None,
+        "predicted_interval_values_preview": interval_preview_rows,
         "predicted_time_placeholder_count": len(result.predicted_time_placeholders),
         "predicted_peak_hazard_count": len(result.predicted_peak_hazard),
     }

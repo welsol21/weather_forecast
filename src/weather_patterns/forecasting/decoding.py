@@ -106,10 +106,57 @@ def _decode_channel_value_sequence(
         mean_reversion = 0.15 * (mean_value - current_value)
         raw_value = current_value + local_slope * position + curvature_adjustment + mean_reversion
 
+        if np.isclose(value_range, 0.0) and np.isclose(min_value, max_value):
+            decoded.append(current_value if np.isclose(current_value, 0.0) is False else raw_value)
+            continue
+
         padding = max(0.05 * value_range, 1e-6)
         decoded.append(_bounded(raw_value, min_value - padding, max_value + padding))
 
     return decoded
+
+
+def _build_interval_timestamps(
+    forecast_time: pd.Timestamp,
+    horizon_steps: int,
+    time_step_hours: float,
+) -> list[pd.Timestamp]:
+    step_hours = max(time_step_hours, 1e-6)
+    return [
+        forecast_time + pd.to_timedelta(step_index * step_hours, unit="h")
+        for step_index in range(1, horizon_steps + 1)
+    ]
+
+
+def _interpolate_interval_values(
+    source_timestamps: list[pd.Timestamp],
+    source_values: list[float],
+    interval_timestamps: list[pd.Timestamp],
+) -> list[float]:
+    if not source_timestamps or not source_values or not interval_timestamps:
+        return []
+    if len(source_timestamps) != len(source_values):
+        raise ValueError("Source timestamps and values must have the same length.")
+    if len(source_timestamps) == 1:
+        return [float(source_values[0]) for _ in interval_timestamps]
+
+    source_x = np.asarray(
+        [(timestamp - source_timestamps[0]).total_seconds() / 3600.0 for timestamp in source_timestamps],
+        dtype=float,
+    )
+    source_y = np.asarray(source_values, dtype=float)
+    target_x = np.asarray(
+        [(timestamp - source_timestamps[0]).total_seconds() / 3600.0 for timestamp in interval_timestamps],
+        dtype=float,
+    )
+    interpolated = np.interp(
+        target_x,
+        source_x,
+        source_y,
+        left=source_y[0],
+        right=source_y[-1],
+    )
+    return interpolated.astype(float).tolist()
 
 
 def decode_forecast_result(
@@ -118,13 +165,18 @@ def decode_forecast_result(
 ) -> ForecastResult:
     predicted_time_placeholders: list[TimePlaceholders] = []
     predicted_peak_hazard: list[dict[str, dict[str, float]]] = []
+    predicted_timestamps: list[pd.Timestamp] = []
     intra_matrices: list[pd.DataFrame] = []
 
-    for step_vector in result.predicted_pattern_matrix:
+    for step_index, step_vector in enumerate(result.predicted_pattern_matrix):
         intra_matrix, _, peak_hazard_matrix, time_block = _split_pattern_vector(step_vector, channels)
         intra_matrices.append(intra_matrix)
         time_placeholders = _decode_time_placeholders(time_block, channels)
         predicted_time_placeholders.append(time_placeholders)
+        step_hours = max(time_placeholders.time_step_hours, 1e-6)
+        predicted_timestamps.append(
+            result.forecast_time + pd.to_timedelta((step_index + 1) * step_hours, unit="h")
+        )
 
         step_peak_hazard: dict[str, dict[str, float]] = {}
         for channel in channels:
@@ -138,8 +190,24 @@ def decode_forecast_result(
         channel: _decode_channel_value_sequence(intra_matrices, channel)
         for channel in channels
     }
+    interval_timestamps = _build_interval_timestamps(
+        forecast_time=result.forecast_time,
+        horizon_steps=result.horizon_steps,
+        time_step_hours=predicted_time_placeholders[0].time_step_hours if predicted_time_placeholders else 1.0,
+    )
+    predicted_interval_values = {
+        channel: _interpolate_interval_values(
+            source_timestamps=predicted_timestamps,
+            source_values=predicted_values[channel],
+            interval_timestamps=interval_timestamps,
+        )
+        for channel in channels
+    }
 
     result.predicted_values = predicted_values
+    result.predicted_timestamps = predicted_timestamps
+    result.predicted_interval_timestamps = interval_timestamps
+    result.predicted_interval_values = predicted_interval_values
     result.predicted_time_placeholders = predicted_time_placeholders
     result.predicted_peak_hazard = predicted_peak_hazard
     return result

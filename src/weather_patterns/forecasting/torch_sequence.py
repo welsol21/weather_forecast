@@ -219,7 +219,10 @@ class TorchSequencePredictor(SequencePredictor):
             predicted_window_count=self._forecast_window_count,
             predicted_pattern_ids=predicted_pattern_ids,
             predicted_pattern_matrix=predicted_pattern_matrix,
+            predicted_timestamps=[],
             predicted_values={},
+            predicted_interval_timestamps=[],
+            predicted_interval_values={},
             predicted_time_placeholders=[],
             predicted_peak_hazard=[],
         )

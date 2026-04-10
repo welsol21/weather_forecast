@@ -43,6 +43,17 @@ python -m weather_patterns predict-sequence --csv hly4935_subset.csv --max-rows 
 6. Runs a baseline pattern discovery stage.
 7. Builds supervised forecast samples for future pattern sequence prediction.
 
+## Pipeline Artifacts
+
+`run-pipeline` now writes a practical artifact bundle into the selected output directory:
+
+- `summary.json`
+- `signal_frame.csv`
+- `extrema_events.csv`
+- `peak_events.csv`
+- `pattern_windows.csv`
+- `forecast_samples.csv`
+
 ## Runtime Note
 
 Signal processing, event extraction, and pattern discovery in the current MVP can run in the regular pipeline environment.

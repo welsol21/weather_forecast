@@ -17,7 +17,7 @@ from weather_patterns.forecasting.training import (
     train_sequence_predictor,
 )
 from weather_patterns.forecasting.torch_sequence import TorchSequencePredictor
-from weather_patterns.pipeline import run_pipeline, write_artifacts_summary
+from weather_patterns.pipeline import run_pipeline, write_pipeline_artifacts
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,9 +63,9 @@ def main() -> None:
         if args.command == "run-pipeline":
             config = PipelineConfig(max_rows=args.max_rows)
             artifacts = run_pipeline(args.csv, config)
-            summary_path = write_artifacts_summary(artifacts, args.output_dir)
-            print(json.dumps(artifacts.summary(), indent=2))
-            print(f"summary_path={summary_path}")
+            output_payload = artifacts.summary()
+            output_payload["artifacts"] = write_pipeline_artifacts(artifacts, args.output_dir)
+            print(json.dumps(output_payload, indent=2))
             return
 
         if args.command == "train-sequence-model":

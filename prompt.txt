@@ -1,0 +1,445 @@
+Ты работаешь над исследовательским Python-проектом по извлечению и прогнозированию погодных паттернов из исторических метеоданных.
+
+Твоя задача — спроектировать и начать реализовывать MVP-систему для файла `hly4935_subset.csv`.
+
+=====================================
+1. КОНТЕКСТ И ИДЕЯ ПРОЕКТА
+=====================================
+
+Мы НЕ хотим строить обычную модель прямого прогноза raw weather values как есть.
+
+Мы хотим построить систему, где:
+
+1) сырые метеорологические ряды являются только наблюдаемыми каналами;
+2) из них извлекаются производные и точки перегиба;
+3) по ним строится поток экстремумов;
+4) окна потока экстремумов преобразуются в pattern representation;
+5) в пространстве этих representations выделяются повторяющиеся паттерны;
+6) затем модель обучается предсказывать будущие паттерны;
+7) после этого через placeholders декодируется прогноз погодных величин, пиков и опасных событий.
+
+Ключевая идея:
+- паттерн первичен;
+- значения и время — placeholders.
+
+=====================================
+2. ИСХОДНЫЙ ДАТАСЕТ
+=====================================
+
+Используется файл:
+
+`hly4935_subset.csv`
+
+Это hourly dataset по станции:
+- Knock Airport
+
+Период:
+- 2020-01-01 00:00
+- 2026-03-01 00:00
+
+Шаг:
+- 1 hour
+
+Основные колонки:
+- `date`
+- `rain`
+- `temp`
+- `wetb`
+- `dewpt`
+- `vappr`
+- `rhum`
+- `msl`
+- `wdsp`
+- `wddir`
+- дополнительные погодные признаки могут присутствовать
+
+Индикаторы качества:
+- `ind` рядом с `rain`
+- `ind.1` рядом с `temp`
+- `ind.2` рядом с `wetb`
+- `ind.3` рядом с `msl`
+- `ind.4` рядом с `wdsp`
+
+Нужно аккуратно обработать эти quality flags и не терять их.
+
+=====================================
+3. PLACEHOLDERS
+=====================================
+
+3.1. Value placeholders
+
+Для MVP основной набор:
+
+- temperature = `temp`
+- relative_humidity = `rhum`
+- pressure = `msl`
+- wind_speed = `wdsp`
+- rainfall = `rain`
+
+Дополнительные:
+- `dewpt`
+- `wetb`
+- `vappr`
+- `wddir`
+
+3.2. Time placeholders
+
+Время — тоже placeholder.
+
+Нужно явно учитывать:
+- `dt` — шаг данных (1 hour)
+- `L` — длина окна паттерна
+- `tau` — горизонт прогноза
+- интервалы между экстремумами
+- ширины пиков
+- длительности превышения порогов
+- mean inter-event gap
+- var inter-event gap
+
+Это не внешние настройки только, а часть pattern representation.
+
+=====================================
+4. НАША МАТЕМАТИЧЕСКАЯ СХЕМА
+=====================================
+
+Полная цепочка:
+
+raw data
+-> smoothed data
+-> derivatives
+-> extrema stream
+-> windows of extrema stream
+-> pattern matrix / pattern flow
+-> pattern discovery
+-> pattern labels / embeddings
+-> model training
+-> inference
+-> decode placeholders forecast
+
+4.1. Сглаживание
+
+Перед вычислением производных ряды должны быть сглажены.
+Сделай это модульно.
+
+Поддержать:
+- rolling mean
+- Savitzky-Golay (если библиотека доступна)
+
+Для MVP допустимо начать с rolling mean.
+
+4.2. Производные
+
+Для каждого канала x(t):
+
+первая дискретная производная:
+x'(t) ~ x_t - x_{t-1}
+
+вторая дискретная производная:
+x''(t) ~ x_t - 2x_{t-1} + x_{t-2}
+
+4.3. Границы паттернов
+
+Мы принимаем следующую рабочую гипотезу:
+
+границы паттернов — это точки перегиба,
+то есть экстремумы первой производной
+или, эквивалентно, смена знака второй производной.
+
+4.4. Поток экстремумов
+
+Для каждого канала надо выделить события экстремумов.
+
+Каждое событие должно содержать как минимум:
+- timestamp
+- channel
+- sign (`max` / `min`)
+- amplitude
+- value
+- first_diff_value
+- second_diff_value
+
+Потом все события объединяются в единый extrema stream.
+
+=====================================
+5. ПИКИ, ЭКСТРЕМУМЫ, ОПАСНЫЕ СОБЫТИЯ
+=====================================
+
+Это должно быть реализовано математически, а не словами.
+
+Для одного канала x(t):
+
+5.1. Локальный максимум
+x_{t-1} < x_t >= x_{t+1}
+
+5.2. Локальный минимум
+x_{t-1} > x_t <= x_{t+1}
+
+5.3. Пик как объект должен включать:
+- peak_time
+- peak_value
+- prominence
+- width_steps
+- rise_slope
+- fall_slope
+- asymmetry
+
+Формулы:
+- prominence = peak_value - max(left_base, right_base)
+- width = right_edge - left_edge
+- rise_slope = (peak_value - left_base_value) / rise_duration
+- fall_slope = (peak_value - right_base_value) / fall_duration
+- asymmetry = rise_duration / fall_duration
+
+5.4. Опасные события должны считаться как window functionals
+
+Для окна [t, t+L]:
+
+- max on window
+- min on window
+- duration over threshold
+- cumulative excess over threshold
+- cumulative rainfall on window
+- drought-like duration (например, мало осадков на протяжении окна)
+- compound events, например wind + rain
+
+Нужно реализовать отдельный peak/hazard layer.
+
+=====================================
+6. ОКНА ПОТОКА ЭКСТРЕМУМОВ
+=====================================
+
+После построения extrema stream его нужно резать на окна.
+
+Для MVP:
+- длина окна L = 24 steps (24 hours)
+- stride = 1 step
+- горизонт прогноза tau = 24 steps
+
+Но проектируй код так, чтобы эти величины были конфигурируемыми.
+
+Важно:
+окно потока экстремумов НЕ является альтернативой pattern matrix.
+Оно является сырьём для её построения.
+
+То есть:
+
+E_t -> pattern representation
+
+=====================================
+7. PATTERN REPRESENTATION
+=====================================
+
+Для каждого окна потока экстремумов нужно строить полный объект:
+
+PatternWindow = (
+    intra_matrix,
+    inter_matrix,
+    peak_hazard_matrix,
+    time_placeholders,
+    feature_vector
+)
+
+7.1. Intra matrix
+
+Столбцы:
+- каналы наблюдений
+
+Строки:
+- структурные операторы
+
+Для MVP включить для каждого канала:
+1. current value
+2. delta_1
+3. delta_6
+4. delta_24
+5. second_diff
+6. mean_on_window
+7. variance_on_window
+8. integral_on_window
+9. max_on_window
+10. min_on_window
+11. range_on_window
+12. extrema_count
+13. extrema_amplitude_sum
+
+7.2. Inter matrix
+
+Для каждой пары каналов:
+1. correlation
+2. lag correlation
+3. slope ratio
+4. synchronous extrema count
+5. mean event lag
+
+7.3. Peak/Hazard layer
+
+Для каждого канала:
+1. number_of_peaks
+2. max_peak_value
+3. mean_prominence
+4. max_prominence
+5. mean_peak_width
+6. max_peak_width
+7. max_rise_slope
+8. duration_over_upper_threshold
+9. upper_tail_excess
+10. lower_tail_excess
+11. cumulative_risk
+12. hazard_flag
+
+7.4. Time placeholders block
+
+Обязательно включить:
+- time_step_hours
+- window_length_steps
+- forecast_horizon_steps
+- mean_inter_event_gap_steps
+- var_inter_event_gap_steps
+- mean_peak_width_steps
+- max_peak_width_steps
+- duration_over_threshold_by_channel
+
+Дополнительно:
+если полезно, добавь нормированные позиции событий внутри окна:
+u_k = (tau_k - tau_1) / (tau_n - tau_1)
+
+=====================================
+8. PATTERN DISCOVERY
+=====================================
+
+После построения pattern windows надо искать повторяющиеся паттерны.
+
+Используй abstraction layer, чтобы потом можно было подключать разные методы.
+
+Для MVP достаточно:
+- HDBSCAN, если доступен
+или
+- k-means / hierarchical clustering как baseline
+
+На выходе должно быть:
+- pattern_id for each window
+- pattern prototypes / centers
+
+Паттерн — это повторяющийся класс похожих pattern windows.
+
+=====================================
+9. ОБУЧЕНИЕ МОДЕЛИ
+=====================================
+
+После unsupervised pattern discovery нужно построить supervised dataset.
+
+Модель НЕ должна учиться напрямую только на raw values.
+
+Она должна учиться предсказывать:
+- будущий pattern_id
+или
+- future pattern vector
+
+с учётом горизонта прогноза tau.
+
+То есть tau должен быть input placeholder.
+
+Идея:
+(history of patterns, tau) -> future pattern
+
+Дополнительно нужны декодеры:
+- value placeholder decoder
+- time placeholder decoder
+- peak/hazard decoder
+
+=====================================
+10. ИНФЕРЕНС
+=====================================
+
+Во время инференса нужно:
+
+1. взять последний кусок истории;
+2. построить текущее pattern window;
+3. подать history + tau в predictor;
+4. получить future pattern;
+5. декодировать:
+   - будущие values
+   - будущие time placeholders
+   - будущие peaks / hazards
+
+Итоговый объект результата должен содержать:
+- forecast_time
+- horizon_steps
+- predicted_pattern_id (если есть)
+- predicted_pattern_vector
+- predicted_values
+- predicted_time_placeholders
+- predicted_peak_hazard
+
+=====================================
+11. ЧТО НУЖНО СДЕЛАТЬ СЕЙЧАС
+=====================================
+
+Сделай не абстрактный текст, а реальную кодовую основу проекта.
+
+Нужно:
+
+1. Спроектировать структуру файлов проекта.
+2. Создать dataclasses / typed objects для:
+   - ExtremaEvent
+   - PeakEvent
+   - ExtremaWindow
+   - TimePlaceholders
+   - PatternWindow
+   - PatternPrototype
+   - ForecastSample
+   - ForecastResult
+3. Реализовать модуль загрузки и очистки `hly4935_subset.csv`
+4. Реализовать mapping колонок этого файла в рабочие каналы
+5. Реализовать сглаживание
+6. Реализовать first diff / second diff
+7. Реализовать detect_extrema
+8. Реализовать detect_peaks
+9. Реализовать build_extrema_windows
+10. Реализовать:
+   - build_intra_matrix
+   - build_inter_matrix
+   - build_peak_hazard_matrix
+   - build_time_placeholders
+   - build_pattern_window
+11. Реализовать flatten_pattern_representation
+12. Реализовать abstraction для pattern discovery
+13. Подготовить build_forecast_samples
+14. Сделать end-to-end pipeline skeleton
+
+=====================================
+12. ТРЕБОВАНИЯ К РЕАЛИЗАЦИИ
+=====================================
+
+- Python 3.11+
+- typing обязателен
+- dataclasses или pydantic-like structures допустимы, но без лишней тяжести
+- код должен быть чистым, модульным, без спагетти
+- никаких хардкодов в логике, кроме явно вынесенных конфигов
+- явный composition root
+- проектировать с расчётом на расширение
+- не делать фейковых заглушек, которые притворяются рабочими
+- если чего-то не хватает для полноценной реализации, явно указать это
+- если библиотека недоступна, не выдумывать, а делать честный fallback только там, где это не ломает идею
+
+=====================================
+13. ЖЕЛАЕМЫЙ ВЫХОД ОТ ТЕБЯ
+=====================================
+
+Сейчас мне нужен от тебя такой результат:
+
+1. Предложи структуру проекта по файлам.
+2. Покажи код основных dataclasses / typed models.
+3. Покажи код конфигов.
+4. Покажи код data loading + cleaning layer для `hly4935_subset.csv`.
+5. Покажи код signal layer.
+6. Покажи код extrema / peak detection layer.
+7. Покажи код построения pattern matrices.
+8. Покажи код build_pattern_window.
+9. Покажи код abstraction для discovery.
+10. Покажи код build_forecast_samples.
+11. Покажи код pipeline skeleton.
+12. Укажи, что уже реализовано полностью, что требует доработки, и что следующим шагом лучше реализовать.
+
+Не ограничивайся общими словами.
+Пиши код, который можно положить в проект и дальше развивать.

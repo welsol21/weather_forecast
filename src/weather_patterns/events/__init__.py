@@ -1,0 +1,1 @@
+"""Extrema and peak detection."""

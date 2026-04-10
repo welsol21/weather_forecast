@@ -1,0 +1,1 @@
+"""Pattern discovery strategies."""

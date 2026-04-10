@@ -7,36 +7,37 @@ import pandas as pd
 from weather_patterns.models import PeakEvent
 
 
-def _walk_left(series: pd.Series, peak_index: int, sign: str) -> int:
+def _walk_left(series: list[float] | tuple[float, ...] | pd.Series, peak_index: int, sign: str) -> int:
     idx = peak_index
     if sign == "max":
-        while idx > 0 and series.iloc[idx - 1] <= series.iloc[idx]:
+        while idx > 0 and series[idx - 1] <= series[idx]:
             idx -= 1
     else:
-        while idx > 0 and series.iloc[idx - 1] >= series.iloc[idx]:
+        while idx > 0 and series[idx - 1] >= series[idx]:
             idx -= 1
     return idx
 
 
-def _walk_right(series: pd.Series, peak_index: int, sign: str) -> int:
+def _walk_right(series: list[float] | tuple[float, ...] | pd.Series, peak_index: int, sign: str) -> int:
     idx = peak_index
     if sign == "max":
-        while idx < len(series) - 1 and series.iloc[idx + 1] <= series.iloc[idx]:
+        while idx < len(series) - 1 and series[idx + 1] <= series[idx]:
             idx += 1
     else:
-        while idx < len(series) - 1 and series.iloc[idx + 1] >= series.iloc[idx]:
+        while idx < len(series) - 1 and series[idx + 1] >= series[idx]:
             idx += 1
     return idx
 
 
 def detect_peaks(signal_frame: pd.DataFrame, channels: list[str], time_column: str = "date") -> list[PeakEvent]:
     peaks: list[PeakEvent] = []
+    timestamps = pd.to_datetime(signal_frame[time_column], errors="coerce").to_numpy()
     for channel in channels:
-        series = pd.to_numeric(signal_frame[f"smoothed_{channel}"], errors="coerce")
+        series = pd.to_numeric(signal_frame[f"smoothed_{channel}"], errors="coerce").to_numpy(dtype=float)
         for idx in range(1, len(series) - 1):
-            prev_value = series.iloc[idx - 1]
-            current_value = series.iloc[idx]
-            next_value = series.iloc[idx + 1]
+            prev_value = series[idx - 1]
+            current_value = series[idx]
+            next_value = series[idx + 1]
             if any(math.isnan(v) for v in (prev_value, current_value, next_value)):
                 continue
 
@@ -50,8 +51,8 @@ def detect_peaks(signal_frame: pd.DataFrame, channels: list[str], time_column: s
 
             left_index = _walk_left(series, idx, sign)
             right_index = _walk_right(series, idx, sign)
-            left_base_value = float(series.iloc[left_index])
-            right_base_value = float(series.iloc[right_index])
+            left_base_value = float(series[left_index])
+            right_base_value = float(series[right_index])
 
             if sign == "max":
                 prominence = current_value - max(left_base_value, right_base_value)
@@ -66,7 +67,7 @@ def detect_peaks(signal_frame: pd.DataFrame, channels: list[str], time_column: s
 
             peaks.append(
                 PeakEvent(
-                    timestamp=pd.Timestamp(signal_frame.iloc[idx][time_column]),
+                    timestamp=pd.Timestamp(timestamps[idx]),
                     channel=channel,
                     sign=sign,
                     peak_value=float(current_value),

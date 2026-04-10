@@ -165,11 +165,19 @@ def build_intra_matrix(
 
 
 def _array_corr(a: np.ndarray, b: np.ndarray) -> float:
+    if np.isfinite(a).all() and np.isfinite(b).all():
+        return _array_corr_finite(a, b)
     valid_mask = np.isfinite(a) & np.isfinite(b)
     if valid_mask.sum() < 2:
         return 0.0
     left = a[valid_mask]
     right = b[valid_mask]
+    return _array_corr_finite(left, right)
+
+
+def _array_corr_finite(left: np.ndarray, right: np.ndarray) -> float:
+    if left.size < 2 or right.size < 2:
+        return 0.0
     left_centered = left - float(left.mean())
     right_centered = right - float(right.mean())
     left_scale = float(np.sqrt(np.dot(left_centered, left_centered)))
@@ -180,10 +188,21 @@ def _array_corr(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _max_lag_correlation_array(a: np.ndarray, b: np.ndarray, max_lag: int) -> float:
-    best = _array_corr(a, b)
+    finite = np.isfinite(a).all() and np.isfinite(b).all()
+    corr_fn = _array_corr_finite if finite else _array_corr
+    best = corr_fn(a, b)
+    best_abs = abs(best)
     for lag in range(1, max_lag + 1):
-        best = max(best, _array_corr(a[lag:], b[:-lag]), key=abs)
-        best = max(best, _array_corr(a[:-lag], b[lag:]), key=abs)
+        candidate = corr_fn(a[lag:], b[:-lag])
+        candidate_abs = abs(candidate)
+        if candidate_abs > best_abs:
+            best = candidate
+            best_abs = candidate_abs
+        candidate = corr_fn(a[:-lag], b[lag:])
+        candidate_abs = abs(candidate)
+        if candidate_abs > best_abs:
+            best = candidate
+            best_abs = candidate_abs
     return float(best)
 
 

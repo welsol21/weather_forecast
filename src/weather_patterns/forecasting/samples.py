@@ -65,11 +65,13 @@ def build_forecast_samples(
             ForecastSample(
                 source_window_id=pattern_window.window_id,
                 history_window_ids=[window.window_id for window in history_windows],
+                history_pattern_matrix=np.vstack([window.feature_vector for window in history_windows]),
                 history_vector=history_vector,
                 forecast_horizon_steps=window_config.forecast_horizon_steps,
                 forecast_window_count=target_window_count,
                 target_window_ids=[window.window_id for window in target_windows],
                 target_pattern_matrix=np.vstack([window.feature_vector for window in target_windows]),
+                history_pattern_ids=[labels_by_window_id.get(window.window_id) for window in history_windows],
                 target_pattern_ids=[labels_by_window_id.get(window.window_id) for window in target_windows],
             )
         )

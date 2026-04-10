@@ -78,6 +78,18 @@ class ComputeConfig:
 
 
 @dataclass(frozen=True)
+class SequenceModelConfig:
+    hidden_size: int = 256
+    num_layers: int = 2
+    dropout: float = 0.1
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+    batch_size: int = 32
+    epochs: int = 10
+    random_seed: int = 42
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
@@ -86,5 +98,6 @@ class PipelineConfig:
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
     forecast: ForecastConfig = field(default_factory=ForecastConfig)
     compute: ComputeConfig = field(default_factory=ComputeConfig)
+    model: SequenceModelConfig = field(default_factory=SequenceModelConfig)
     time_step_hours: float = 1.0
     max_rows: int | None = None

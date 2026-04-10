@@ -38,3 +38,5 @@ python -m weather_patterns run-pipeline --csv hly4935_subset.csv --output-dir ar
 Signal processing, event extraction, and pattern discovery in the current MVP can run in the regular pipeline environment.
 
 All model stages added on top of this MVP, including training and inference, must be treated as GPU-only. The project config now encodes this requirement through `PipelineConfig.compute`, and future model entry points should validate CUDA availability through `weather_patterns.forecasting.runtime.resolve_model_device`.
+
+The repository now also contains a GPU-only `torch` sequence predictor skeleton that consumes sequence-shaped forecast samples and predicts a future pattern matrix. It is intentionally isolated from the CPU preprocessing pipeline and requires CUDA-aware PyTorch at runtime.

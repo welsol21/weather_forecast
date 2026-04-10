@@ -1,1 +1,1 @@
-"""Forecast sample builders and runtime contracts for future pattern sequences."""
+"""Forecast sample builders and GPU-only runtime contracts for future pattern sequences."""

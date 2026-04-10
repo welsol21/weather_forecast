@@ -113,11 +113,13 @@ class PatternPrototype:
 class ForecastSample:
     source_window_id: int
     history_window_ids: list[int]
+    history_pattern_matrix: np.ndarray
     history_vector: np.ndarray
     forecast_horizon_steps: int
     forecast_window_count: int
     target_window_ids: list[int]
     target_pattern_matrix: np.ndarray
+    history_pattern_ids: list[int | None] = field(default_factory=list)
     target_pattern_ids: list[int | None] = field(default_factory=list)
 
 
@@ -137,6 +139,22 @@ class ForecastResult:
 class DiscoveryResult:
     labels_by_window_id: dict[int, int]
     prototypes: list[PatternPrototype]
+
+
+@dataclass(slots=True)
+class ForecastTrainingDataset:
+    source_window_ids: list[int]
+    history_window_ids: list[list[int]]
+    target_window_ids: list[list[int]]
+    history_pattern_tensor: np.ndarray
+    history_vector_matrix: np.ndarray
+    target_pattern_tensor: np.ndarray
+    history_pattern_id_matrix: np.ndarray
+    target_pattern_id_matrix: np.ndarray
+    forecast_horizon_steps: int
+    forecast_window_count: int
+    history_window_count: int
+    feature_dim: int
 
 
 @dataclass(slots=True)

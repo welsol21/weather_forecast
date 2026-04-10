@@ -111,6 +111,7 @@ def _evaluate_split(
 
         raw_result = predictor.predict(
             history_pattern_matrix=sample.history_pattern_matrix,
+            history_vector=sample.history_vector,
             forecast_time=forecast_time,
             horizon_steps=horizon_steps,
             prototypes=artifacts.discovery_result.prototypes,

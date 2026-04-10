@@ -17,6 +17,7 @@ class SequencePredictor(ABC):
     def predict(
         self,
         history_pattern_matrix: np.ndarray,
+        history_vector: np.ndarray,
         forecast_time: pd.Timestamp,
         horizon_steps: int,
         prototypes: list[PatternPrototype] | None = None,

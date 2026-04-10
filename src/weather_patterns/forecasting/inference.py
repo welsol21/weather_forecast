@@ -20,9 +20,22 @@ def predict_future_pattern_sequence(
 
     history_windows = artifacts.pattern_windows[-history_window_count:]
     history_pattern_matrix = np.vstack([window.feature_vector for window in history_windows])
+    history_vector = np.concatenate(
+        [
+            *(window.feature_vector for window in history_windows),
+            np.asarray(
+                [
+                    float(config.window.forecast_horizon_steps),
+                    float(config.forecast.target_window_count or config.window.forecast_horizon_steps),
+                ],
+                dtype=float,
+            ),
+        ]
+    )
     forecast_time = history_windows[-1].end_time
     raw_result = predictor.predict(
         history_pattern_matrix=history_pattern_matrix,
+        history_vector=history_vector,
         forecast_time=forecast_time,
         horizon_steps=config.window.forecast_horizon_steps,
         prototypes=artifacts.discovery_result.prototypes,

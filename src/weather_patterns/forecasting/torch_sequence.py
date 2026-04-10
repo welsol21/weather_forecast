@@ -45,6 +45,8 @@ class TorchSequencePredictor(SequencePredictor):
         self._history_window_count: int | None = None
         self._input_mean: np.ndarray | None = None
         self._input_std: np.ndarray | None = None
+        self._context_mean: np.ndarray | None = None
+        self._context_std: np.ndarray | None = None
         self._target_mean: np.ndarray | None = None
         self._target_std: np.ndarray | None = None
 
@@ -56,9 +58,16 @@ class TorchSequencePredictor(SequencePredictor):
             self._torch = torch
             self._nn = nn
 
-    def _build_model(self, history_window_count: int, feature_dim: int, forecast_window_count: int) -> None:
+    def _build_model(
+        self,
+        history_window_count: int,
+        feature_dim: int,
+        forecast_window_count: int,
+        context_dim: int,
+    ) -> None:
         self._lazy_import_torch()
         nn = self._nn
+        torch = self._torch
 
         class SequenceRegressor(nn.Module):
             def __init__(self) -> None:
@@ -71,6 +80,18 @@ class TorchSequencePredictor(SequencePredictor):
                     batch_first=True,
                     dropout=dropout,
                 )
+                self.context_mlp = nn.Sequential(
+                    nn.LayerNorm(context_dim),
+                    nn.Linear(context_dim, self_model_config.hidden_size),
+                    nn.GELU(),
+                    nn.Dropout(self_model_config.dropout),
+                    nn.Linear(self_model_config.hidden_size, self_model_config.hidden_size),
+                )
+                self.fusion = nn.Sequential(
+                    nn.LayerNorm(self_model_config.hidden_size * 2),
+                    nn.Linear(self_model_config.hidden_size * 2, self_model_config.hidden_size),
+                    nn.GELU(),
+                )
                 self.head = nn.Sequential(
                     nn.LayerNorm(self_model_config.hidden_size),
                     nn.Linear(
@@ -79,11 +100,13 @@ class TorchSequencePredictor(SequencePredictor):
                     ),
                 )
 
-            def forward(self, history_pattern_tensor):  # type: ignore[no-untyped-def]
+            def forward(self, history_pattern_tensor, history_context, baseline_target):  # type: ignore[no-untyped-def]
                 _, hidden = self.encoder(history_pattern_tensor)
                 encoded = hidden[-1]
-                output = self.head(encoded)
-                return output.view(-1, forecast_window_count, feature_dim)
+                context_encoded = self.context_mlp(history_context)
+                fused = self.fusion(torch.cat([encoded, context_encoded], dim=1))
+                output = self.head(fused).view(-1, forecast_window_count, feature_dim)
+                return baseline_target + output
 
         self_model_config = self.model_config
         self._model = SequenceRegressor().to(self.device)
@@ -101,6 +124,7 @@ class TorchSequencePredictor(SequencePredictor):
             history_window_count=dataset.history_window_count,
             feature_dim=dataset.feature_dim,
             forecast_window_count=dataset.forecast_window_count,
+            context_dim=dataset.history_vector_matrix.shape[1],
         )
         self._history_window_count = dataset.history_window_count
         optimizer = torch.optim.AdamW(
@@ -113,20 +137,38 @@ class TorchSequencePredictor(SequencePredictor):
         self._input_mean = dataset.history_pattern_tensor.mean(axis=(0, 1), keepdims=True).astype(np.float32)
         self._input_std = dataset.history_pattern_tensor.std(axis=(0, 1), keepdims=True).astype(np.float32)
         self._input_std = np.where(self._input_std > 1e-6, self._input_std, 1.0).astype(np.float32)
+        self._context_mean = dataset.history_vector_matrix.mean(axis=0, keepdims=True).astype(np.float32)
+        self._context_std = dataset.history_vector_matrix.std(axis=0, keepdims=True).astype(np.float32)
+        self._context_std = np.where(self._context_std > 1e-6, self._context_std, 1.0).astype(np.float32)
         self._target_mean = dataset.target_pattern_tensor.mean(axis=(0, 1), keepdims=True).astype(np.float32)
         self._target_std = dataset.target_pattern_tensor.std(axis=(0, 1), keepdims=True).astype(np.float32)
         self._target_std = np.where(self._target_std > 1e-6, self._target_std, 1.0).astype(np.float32)
 
         normalized_history = (dataset.history_pattern_tensor - self._input_mean) / self._input_std
+        normalized_context = (dataset.history_vector_matrix - self._context_mean) / self._context_std
         normalized_target = (dataset.target_pattern_tensor - self._target_mean) / self._target_std
+        baseline_target = (
+            dataset.history_pattern_tensor[:, -1:, :] - self._target_mean
+        ) / self._target_std
+        baseline_target = np.repeat(baseline_target, dataset.forecast_window_count, axis=1)
 
         history_pattern_tensor = torch.as_tensor(
             normalized_history,
             dtype=torch.float32,
             device=self.device,
         )
+        history_context_tensor = torch.as_tensor(
+            normalized_context,
+            dtype=torch.float32,
+            device=self.device,
+        )
         target_pattern_tensor = torch.as_tensor(
             normalized_target,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        baseline_pattern_tensor = torch.as_tensor(
+            baseline_target,
             dtype=torch.float32,
             device=self.device,
         )
@@ -138,10 +180,12 @@ class TorchSequencePredictor(SequencePredictor):
             for start in range(0, sample_count, batch_size):
                 batch_indices = permutation[start : start + batch_size]
                 batch_history = history_pattern_tensor[batch_indices]
+                batch_context = history_context_tensor[batch_indices]
                 batch_target = target_pattern_tensor[batch_indices]
+                batch_baseline = baseline_pattern_tensor[batch_indices]
 
                 optimizer.zero_grad(set_to_none=True)
-                predicted = self._model(batch_history)
+                predicted = self._model(batch_history, batch_context, batch_baseline)
                 loss = loss_fn(predicted, batch_target)
                 loss.backward()
                 optimizer.step()
@@ -151,7 +195,14 @@ class TorchSequencePredictor(SequencePredictor):
             raise RuntimeError("The predictor must be trained before it can be saved.")
         if self._history_window_count is None:
             raise RuntimeError("Missing history window count for checkpoint export.")
-        if self._input_mean is None or self._input_std is None or self._target_mean is None or self._target_std is None:
+        if (
+            self._input_mean is None
+            or self._input_std is None
+            or self._context_mean is None
+            or self._context_std is None
+            or self._target_mean is None
+            or self._target_std is None
+        ):
             raise RuntimeError("Missing normalization statistics for checkpoint export.")
 
         self._lazy_import_torch()
@@ -166,8 +217,11 @@ class TorchSequencePredictor(SequencePredictor):
                 "history_window_count": self._history_window_count,
                 "input_mean": self._input_mean,
                 "input_std": self._input_std,
+                "context_mean": self._context_mean,
+                "context_std": self._context_std,
                 "target_mean": self._target_mean,
                 "target_std": self._target_std,
+                "context_dim": int(self._context_mean.shape[1]),
                 "model_config": {
                     "hidden_size": self.model_config.hidden_size,
                     "num_layers": self.model_config.num_layers,
@@ -198,11 +252,14 @@ class TorchSequencePredictor(SequencePredictor):
             history_window_count=int(checkpoint["history_window_count"]),
             feature_dim=int(checkpoint["feature_dim"]),
             forecast_window_count=int(checkpoint["forecast_window_count"]),
+            context_dim=int(checkpoint["context_dim"]),
         )
         predictor._model.load_state_dict(checkpoint["state_dict"])
         predictor._history_window_count = int(checkpoint["history_window_count"])
         predictor._input_mean = np.asarray(checkpoint["input_mean"], dtype=np.float32)
         predictor._input_std = np.asarray(checkpoint["input_std"], dtype=np.float32)
+        predictor._context_mean = np.asarray(checkpoint["context_mean"], dtype=np.float32)
+        predictor._context_std = np.asarray(checkpoint["context_std"], dtype=np.float32)
         predictor._target_mean = np.asarray(checkpoint["target_mean"], dtype=np.float32)
         predictor._target_std = np.asarray(checkpoint["target_std"], dtype=np.float32)
         predictor._model.eval()
@@ -211,6 +268,7 @@ class TorchSequencePredictor(SequencePredictor):
     def predict(
         self,
         history_pattern_matrix: np.ndarray,
+        history_vector: np.ndarray,
         forecast_time: pd.Timestamp,
         horizon_steps: int,
         prototypes: list[PatternPrototype] | None = None,
@@ -219,7 +277,14 @@ class TorchSequencePredictor(SequencePredictor):
             raise RuntimeError("The predictor must be trained before inference.")
         if self._history_window_count is None:
             raise RuntimeError("Missing history window count for inference.")
-        if self._input_mean is None or self._input_std is None or self._target_mean is None or self._target_std is None:
+        if (
+            self._input_mean is None
+            or self._input_std is None
+            or self._context_mean is None
+            or self._context_std is None
+            or self._target_mean is None
+            or self._target_std is None
+        ):
             raise RuntimeError("The predictor must be trained before inference normalization is available.")
         if history_pattern_matrix.shape[1] != self._feature_dim:
             raise ValueError("Unexpected history pattern feature dimension.")
@@ -229,14 +294,27 @@ class TorchSequencePredictor(SequencePredictor):
         self._lazy_import_torch()
         torch = self._torch
         normalized_history = (history_pattern_matrix.astype(np.float32) - self._input_mean[0]) / self._input_std[0]
+        normalized_context = (history_vector.astype(np.float32)[None, :] - self._context_mean) / self._context_std
+        baseline_target = ((history_pattern_matrix[-1:, :] - self._target_mean[0]) / self._target_std[0]).astype(np.float32)
+        baseline_target = np.repeat(baseline_target[None, :, :], self._forecast_window_count, axis=1)
         history_tensor = torch.as_tensor(
             normalized_history[None, :, :],
             dtype=torch.float32,
             device=self.device,
         )
+        context_tensor = torch.as_tensor(
+            normalized_context,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        baseline_tensor = torch.as_tensor(
+            baseline_target,
+            dtype=torch.float32,
+            device=self.device,
+        )
         self._model.eval()
         with torch.no_grad():
-            predicted_pattern_tensor = self._model(history_tensor)
+            predicted_pattern_tensor = self._model(history_tensor, context_tensor, baseline_tensor)
         predicted_pattern_matrix = predicted_pattern_tensor[0].detach().cpu().numpy()
         predicted_pattern_matrix = predicted_pattern_matrix * self._target_std[0] + self._target_mean[0]
         predicted_pattern_ids = _nearest_pattern_ids(predicted_pattern_matrix, prototypes)

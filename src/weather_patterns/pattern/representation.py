@@ -166,7 +166,7 @@ def build_intra_matrix(
     smoothed_series: dict[str, np.ndarray] | None = None,
     diff2_series: dict[str, np.ndarray] | None = None,
     events_by_channel: dict[str, list[ExtremaEvent]] | None = None,
-) -> pd.DataFrame:
+) -> np.ndarray:
     matrix = np.zeros((len(INTRA_FEATURES), len(channels)), dtype=float)
     feature_index = {name: index for index, name in enumerate(INTRA_FEATURES)}
     channel_index = {name: index for index, name in enumerate(channels)}
@@ -210,7 +210,7 @@ def build_intra_matrix(
         matrix[feature_index["range_on_window"], column_index] = maximum - minimum if clean.size else 0.0
         matrix[feature_index["extrema_count"], column_index] = extrema_count
         matrix[feature_index["extrema_amplitude_sum"], column_index] = extrema_amplitude_sum
-    return pd.DataFrame(matrix, index=INTRA_FEATURES, columns=channels)
+    return matrix
 
 
 def _array_corr(a: np.ndarray, b: np.ndarray) -> float:
@@ -354,7 +354,7 @@ def build_inter_matrix(
     smoothed_series: dict[str, np.ndarray] | None = None,
     diff1_series: dict[str, np.ndarray] | None = None,
     events_by_channel: dict[str, list[ExtremaEvent]] | None = None,
-) -> pd.DataFrame:
+) -> np.ndarray:
     pair_labels = [f"{left}__{right}" for left, right in combinations(channels, 2)]
     channel_pairs = list(combinations(range(len(channels)), 2))
     matrix = np.zeros((len(INTER_FEATURES), len(pair_labels)), dtype=float)
@@ -396,7 +396,7 @@ def build_inter_matrix(
         matrix[feature_index["slope_ratio"], pair_index] = float(left_diff / right_diff) if right_diff else 0.0
         matrix[feature_index["synchronous_extrema_count"], pair_index] = sync_count
         matrix[feature_index["mean_event_lag"], pair_index] = mean_lag
-    return pd.DataFrame(matrix, index=INTER_FEATURES, columns=pair_labels)
+    return matrix
 
 
 def _compound_event_flag(
@@ -429,7 +429,7 @@ def build_peak_hazard_matrix(
     lower_thresholds: dict[str, float],
     raw_series: dict[str, np.ndarray] | None = None,
     peaks_by_channel: dict[str, list[PeakEvent]] | None = None,
-) -> pd.DataFrame:
+) -> np.ndarray:
     matrix = np.zeros((len(PEAK_HAZARD_FEATURES), len(channels)), dtype=float)
     feature_index = {name: index for index, name in enumerate(PEAK_HAZARD_FEATURES)}
     channel_index = {name: index for index, name in enumerate(channels)}
@@ -463,7 +463,7 @@ def build_peak_hazard_matrix(
         matrix[feature_index["cumulative_risk"], column_index] = cumulative_risk
         matrix[feature_index["hazard_flag"], column_index] = float(duration_over > 0 or cumulative_risk > 0)
         matrix[feature_index["compound_event_flag"], column_index] = compound_flag
-    return pd.DataFrame(matrix, index=PEAK_HAZARD_FEATURES, columns=channels)
+    return matrix
 
 
 def build_time_placeholders(
@@ -471,7 +471,7 @@ def build_time_placeholders(
     channels: list[str],
     forecast_horizon_steps: int,
     time_step_hours: float,
-    peak_hazard_matrix: pd.DataFrame,
+    peak_hazard_matrix: np.ndarray,
 ) -> TimePlaceholders:
     event_indices = sorted(event.index for event in extrema_window.events)
     gaps = np.diff(event_indices) if len(event_indices) > 1 else np.asarray([], dtype=float)
@@ -481,8 +481,11 @@ def build_time_placeholders(
     for event in extrema_window.events:
         normalized_positions.append((event.index - extrema_window.start_index) / window_span)
 
-    duration_row = peak_hazard_matrix.loc["duration_over_upper_threshold"]
-    durations = {channel: float(duration_row[channel]) for channel in channels}
+    duration_row_index = PEAK_HAZARD_FEATURES.index("duration_over_upper_threshold")
+    durations = {
+        channel: float(peak_hazard_matrix[duration_row_index, channel_index])
+        for channel_index, channel in enumerate(channels)
+    }
     return TimePlaceholders(
         time_step_hours=time_step_hours,
         window_length_steps=extrema_window.end_index - extrema_window.start_index + 1,
@@ -497,9 +500,9 @@ def build_time_placeholders(
 
 
 def flatten_pattern_representation(pattern_window: PatternWindow) -> np.ndarray:
-    intra = pattern_window.intra_matrix.to_numpy(dtype=float).ravel(order="C")
-    inter = pattern_window.inter_matrix.to_numpy(dtype=float).ravel(order="C")
-    peak_hazard = pattern_window.peak_hazard_matrix.to_numpy(dtype=float).ravel(order="C")
+    intra = pattern_window.intra_matrix.ravel(order="C")
+    inter = pattern_window.inter_matrix.ravel(order="C")
+    peak_hazard = pattern_window.peak_hazard_matrix.ravel(order="C")
     time_block = pattern_window.time_placeholders.to_feature_array(pattern_window.channels)
     return np.concatenate([intra, inter, peak_hazard, time_block]).astype(float)
 

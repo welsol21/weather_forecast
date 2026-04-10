@@ -94,9 +94,9 @@ class PatternWindow:
     start_time: pd.Timestamp
     end_time: pd.Timestamp
     channels: list[str]
-    intra_matrix: pd.DataFrame
-    inter_matrix: pd.DataFrame
-    peak_hazard_matrix: pd.DataFrame
+    intra_matrix: np.ndarray
+    inter_matrix: np.ndarray
+    peak_hazard_matrix: np.ndarray
     time_placeholders: TimePlaceholders
     feature_vector: np.ndarray
     extrema_window: ExtremaWindow

@@ -76,27 +76,68 @@ def _decode_time_placeholders(time_block: np.ndarray, channels: list[str]) -> Ti
     )
 
 
+def _bounded(value: float, lower: float, upper: float) -> float:
+    if lower > upper:
+        lower, upper = upper, lower
+    return float(min(max(value, lower), upper))
+
+
+def _decode_channel_value_sequence(
+    intra_matrices: list[pd.DataFrame],
+    channel: str,
+) -> list[float]:
+    decoded: list[float] = []
+    total_steps = max(len(intra_matrices) - 1, 1)
+
+    for index, intra_matrix in enumerate(intra_matrices):
+        current_value = float(intra_matrix.loc["current_value", channel])
+        delta_1 = float(intra_matrix.loc["delta_1", channel])
+        delta_6 = float(intra_matrix.loc["delta_6", channel]) / 6.0
+        delta_24 = float(intra_matrix.loc["delta_24", channel]) / 24.0
+        second_diff = float(intra_matrix.loc["second_diff", channel])
+        mean_value = float(intra_matrix.loc["mean_on_window", channel])
+        min_value = float(intra_matrix.loc["min_on_window", channel])
+        max_value = float(intra_matrix.loc["max_on_window", channel])
+        value_range = abs(float(intra_matrix.loc["range_on_window", channel]))
+
+        position = index / total_steps
+        local_slope = 0.5 * delta_1 + 0.3 * delta_6 + 0.2 * delta_24
+        curvature_adjustment = 0.5 * second_diff * position * (1.0 - position)
+        mean_reversion = 0.15 * (mean_value - current_value)
+        raw_value = current_value + local_slope * position + curvature_adjustment + mean_reversion
+
+        padding = max(0.05 * value_range, 1e-6)
+        decoded.append(_bounded(raw_value, min_value - padding, max_value + padding))
+
+    return decoded
+
+
 def decode_forecast_result(
     result: ForecastResult,
     channels: list[str],
 ) -> ForecastResult:
-    predicted_values = {channel: [] for channel in channels}
     predicted_time_placeholders: list[TimePlaceholders] = []
     predicted_peak_hazard: list[dict[str, dict[str, float]]] = []
+    intra_matrices: list[pd.DataFrame] = []
 
     for step_vector in result.predicted_pattern_matrix:
         intra_matrix, _, peak_hazard_matrix, time_block = _split_pattern_vector(step_vector, channels)
+        intra_matrices.append(intra_matrix)
         time_placeholders = _decode_time_placeholders(time_block, channels)
         predicted_time_placeholders.append(time_placeholders)
 
         step_peak_hazard: dict[str, dict[str, float]] = {}
         for channel in channels:
-            predicted_values[channel].append(float(intra_matrix.loc["current_value", channel]))
             step_peak_hazard[channel] = {
                 feature_name: float(peak_hazard_matrix.loc[feature_name, channel])
                 for feature_name in PEAK_HAZARD_FEATURES
             }
         predicted_peak_hazard.append(step_peak_hazard)
+
+    predicted_values = {
+        channel: _decode_channel_value_sequence(intra_matrices, channel)
+        for channel in channels
+    }
 
     result.predicted_values = predicted_values
     result.predicted_time_placeholders = predicted_time_placeholders

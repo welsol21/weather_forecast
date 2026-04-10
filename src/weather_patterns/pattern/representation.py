@@ -7,9 +7,6 @@ import pandas as pd
 
 from weather_patterns.config import HazardConfig, PipelineConfig
 from weather_patterns.models import ExtremaEvent, ExtremaWindow, PatternWindow, PeakEvent, TimePlaceholders
-from weather_patterns.signal.processing import safe_variance
-
-
 INTRA_FEATURES = [
     "current_value",
     "delta_1",
@@ -85,6 +82,13 @@ def _delta_array(values: np.ndarray, steps: int) -> float:
     return float(clean[-1] - clean[-(steps + 1)])
 
 
+def _variance_array(values: np.ndarray) -> float:
+    clean = values[np.isfinite(values)]
+    if clean.size == 0:
+        return 0.0
+    return float(np.var(clean))
+
+
 def build_intra_matrix(
     window_frame: pd.DataFrame,
     window_events: list[ExtremaEvent],
@@ -117,7 +121,7 @@ def build_intra_matrix(
         matrix[feature_index["delta_24"], column_index] = _delta_array(series, 24)
         matrix[feature_index["second_diff"], column_index] = float(clean_diff2[-1]) if clean_diff2.size else 0.0
         matrix[feature_index["mean_on_window"], column_index] = float(clean.mean()) if clean.size else 0.0
-        matrix[feature_index["variance_on_window"], column_index] = safe_variance(pd.Series(series))
+        matrix[feature_index["variance_on_window"], column_index] = _variance_array(series)
         matrix[feature_index["integral_on_window"], column_index] = float(np.nansum(clean)) if clean.size else 0.0
         matrix[feature_index["max_on_window"], column_index] = maximum
         matrix[feature_index["min_on_window"], column_index] = minimum
@@ -232,12 +236,11 @@ def _compound_event_flag(
         return 0.0
     wind_threshold = upper_thresholds.get("wind_speed", 0.0)
     rain_threshold = upper_thresholds.get("rainfall", 0.0)
-    mask = (
-        pd.to_numeric(window_frame["wind_speed"], errors="coerce").fillna(0.0) >= wind_threshold
-    ) & (
-        pd.to_numeric(window_frame["rainfall"], errors="coerce").fillna(0.0) >= rain_threshold
-    )
-    return float(mask.any())
+    wind = pd.to_numeric(window_frame["wind_speed"], errors="coerce").to_numpy(dtype=float)
+    rain = pd.to_numeric(window_frame["rainfall"], errors="coerce").to_numpy(dtype=float)
+    wind = np.nan_to_num(wind, nan=0.0)
+    rain = np.nan_to_num(rain, nan=0.0)
+    return float(np.any((wind >= wind_threshold) & (rain >= rain_threshold)))
 
 
 def build_peak_hazard_matrix(
@@ -257,21 +260,26 @@ def build_peak_hazard_matrix(
     }
     for channel in channels:
         column_index = channel_index[channel]
-        series = pd.to_numeric(window_frame[channel], errors="coerce").dropna()
+        series = pd.to_numeric(window_frame[channel], errors="coerce").to_numpy(dtype=float)
+        clean_series = series[np.isfinite(series)]
         peaks = peaks_by_channel[channel]
         upper = upper_thresholds[channel]
         lower = lower_thresholds[channel]
-        duration_over = float((series > upper).sum()) if not series.empty else 0.0
-        upper_tail = float((series - upper).clip(lower=0).sum()) if not series.empty else 0.0
-        lower_tail = float((lower - series).clip(lower=0).sum()) if not series.empty else 0.0
+        duration_over = float(np.sum(clean_series > upper)) if clean_series.size else 0.0
+        upper_tail = float(np.sum(np.clip(clean_series - upper, a_min=0.0, a_max=None))) if clean_series.size else 0.0
+        lower_tail = float(np.sum(np.clip(lower - clean_series, a_min=0.0, a_max=None))) if clean_series.size else 0.0
         cumulative_risk = upper_tail + lower_tail + duration_over
+        prominences = np.asarray([peak.prominence for peak in peaks], dtype=float)
+        widths = np.asarray([peak.width_steps for peak in peaks], dtype=float)
+        rise_slopes = np.asarray([peak.rise_slope for peak in peaks], dtype=float)
+        peak_values = np.asarray([peak.peak_value for peak in peaks], dtype=float)
         matrix[feature_index["number_of_peaks"], column_index] = float(len(peaks))
-        matrix[feature_index["max_peak_value"], column_index] = float(max((peak.peak_value for peak in peaks), default=0.0))
-        matrix[feature_index["mean_prominence"], column_index] = float(np.mean([peak.prominence for peak in peaks])) if peaks else 0.0
-        matrix[feature_index["max_prominence"], column_index] = float(max((peak.prominence for peak in peaks), default=0.0))
-        matrix[feature_index["mean_peak_width"], column_index] = float(np.mean([peak.width_steps for peak in peaks])) if peaks else 0.0
-        matrix[feature_index["max_peak_width"], column_index] = float(max((peak.width_steps for peak in peaks), default=0.0))
-        matrix[feature_index["max_rise_slope"], column_index] = float(max((peak.rise_slope for peak in peaks), default=0.0))
+        matrix[feature_index["max_peak_value"], column_index] = float(peak_values.max()) if peak_values.size else 0.0
+        matrix[feature_index["mean_prominence"], column_index] = float(prominences.mean()) if prominences.size else 0.0
+        matrix[feature_index["max_prominence"], column_index] = float(prominences.max()) if prominences.size else 0.0
+        matrix[feature_index["mean_peak_width"], column_index] = float(widths.mean()) if widths.size else 0.0
+        matrix[feature_index["max_peak_width"], column_index] = float(widths.max()) if widths.size else 0.0
+        matrix[feature_index["max_rise_slope"], column_index] = float(rise_slopes.max()) if rise_slopes.size else 0.0
         matrix[feature_index["duration_over_upper_threshold"], column_index] = duration_over
         matrix[feature_index["upper_tail_excess"], column_index] = upper_tail
         matrix[feature_index["lower_tail_excess"], column_index] = lower_tail
@@ -296,10 +304,8 @@ def build_time_placeholders(
     for event in extrema_window.events:
         normalized_positions.append((event.index - extrema_window.start_index) / window_span)
 
-    durations = {
-        channel: float(peak_hazard_matrix.loc["duration_over_upper_threshold", channel])
-        for channel in channels
-    }
+    duration_row = peak_hazard_matrix.loc["duration_over_upper_threshold"]
+    durations = {channel: float(duration_row[channel]) for channel in channels}
     return TimePlaceholders(
         time_step_hours=time_step_hours,
         window_length_steps=extrema_window.end_index - extrema_window.start_index + 1,

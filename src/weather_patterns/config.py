@@ -68,6 +68,13 @@ class DiscoveryConfig:
 @dataclass(frozen=True)
 class ForecastConfig:
     history_window_count: int = 4
+    target_window_count: int | None = None
+
+
+@dataclass(frozen=True)
+class ComputeConfig:
+    model_device: str = "cuda"
+    require_gpu: bool = True
 
 
 @dataclass(frozen=True)
@@ -78,5 +85,6 @@ class PipelineConfig:
     hazard: HazardConfig = field(default_factory=HazardConfig)
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
     forecast: ForecastConfig = field(default_factory=ForecastConfig)
+    compute: ComputeConfig = field(default_factory=ComputeConfig)
     time_step_hours: float = 1.0
     max_rows: int | None = None

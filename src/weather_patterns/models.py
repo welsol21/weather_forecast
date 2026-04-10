@@ -115,20 +115,22 @@ class ForecastSample:
     history_window_ids: list[int]
     history_vector: np.ndarray
     forecast_horizon_steps: int
-    target_window_id: int
-    target_pattern_vector: np.ndarray
-    target_pattern_id: int | None = None
+    forecast_window_count: int
+    target_window_ids: list[int]
+    target_pattern_matrix: np.ndarray
+    target_pattern_ids: list[int | None] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class ForecastResult:
     forecast_time: pd.Timestamp
     horizon_steps: int
-    predicted_pattern_id: int | None
-    predicted_pattern_vector: np.ndarray
-    predicted_values: dict[str, float]
-    predicted_time_placeholders: TimePlaceholders
-    predicted_peak_hazard: dict[str, dict[str, float]]
+    predicted_window_count: int
+    predicted_pattern_ids: list[int | None]
+    predicted_pattern_matrix: np.ndarray
+    predicted_values: dict[str, list[float]]
+    predicted_time_placeholders: list[TimePlaceholders]
+    predicted_peak_hazard: list[dict[str, dict[str, float]]]
 
 
 @dataclass(slots=True)
@@ -149,6 +151,7 @@ class PipelineArtifacts:
     forecast_samples: list[ForecastSample]
 
     def summary(self) -> dict[str, Any]:
+        target_window_counts = [sample.forecast_window_count for sample in self.forecast_samples]
         return {
             "rows": int(len(self.dataset.dataframe)),
             "channels": self.dataset.channel_columns,
@@ -157,5 +160,6 @@ class PipelineArtifacts:
             "extrema_windows": len(self.extrema_windows),
             "pattern_windows": len(self.pattern_windows),
             "forecast_samples": len(self.forecast_samples),
+            "forecast_target_window_count": max(target_window_counts) if target_window_counts else 0,
             "discovered_patterns": len(self.discovery_result.prototypes),
         }

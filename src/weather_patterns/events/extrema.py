@@ -12,7 +12,9 @@ def detect_extrema(signal_frame: pd.DataFrame, channels: list[str], time_column:
     for channel in channels:
         diff_column = f"diff1_{channel}"
         second_diff_column = f"diff2_{channel}"
-        values = signal_frame[diff_column].astype(float)
+        values = pd.to_numeric(signal_frame[diff_column], errors="coerce")
+        smoothed_values = pd.to_numeric(signal_frame[f"smoothed_{channel}"], errors="coerce")
+        second_diff_values = pd.to_numeric(signal_frame[second_diff_column], errors="coerce")
         for idx in range(1, len(signal_frame) - 1):
             prev_value = values.iloc[idx - 1]
             current_value = values.iloc[idx]
@@ -36,9 +38,9 @@ def detect_extrema(signal_frame: pd.DataFrame, channels: list[str], time_column:
                     channel=channel,
                     sign=sign,
                     amplitude=float(amplitude),
-                    value=float(signal_frame.iloc[idx][f"smoothed_{channel}"]),
+                    value=float(smoothed_values.iloc[idx]),
                     first_diff_value=float(current_value),
-                    second_diff_value=float(signal_frame.iloc[idx][second_diff_column]),
+                    second_diff_value=float(second_diff_values.iloc[idx]),
                     index=idx,
                 )
             )

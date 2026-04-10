@@ -83,8 +83,8 @@ def build_intra_matrix(
 ) -> pd.DataFrame:
     matrix = pd.DataFrame(index=INTRA_FEATURES, columns=channels, dtype=float)
     for channel in channels:
-        series = window_frame[f"smoothed_{channel}"].astype(float)
-        diff2 = window_frame[f"diff2_{channel}"].astype(float)
+        series = pd.to_numeric(window_frame[f"smoothed_{channel}"], errors="coerce")
+        diff2 = pd.to_numeric(window_frame[f"diff2_{channel}"], errors="coerce")
         channel_events = [event for event in window_events if event.channel == channel]
         clean = series.dropna()
         matrix.loc["current_value", channel] = float(clean.iloc[-1]) if not clean.empty else 0.0
@@ -109,6 +109,25 @@ def _max_lag_correlation(a: pd.Series, b: pd.Series, max_lag: int) -> float:
         correlations.append(safe_corr(a.iloc[lag:], b.iloc[:-lag]))
         correlations.append(safe_corr(a.iloc[:-lag], b.iloc[lag:]))
     return float(max(correlations, key=abs))
+
+
+def _array_corr(a: np.ndarray, b: np.ndarray) -> float:
+    valid_mask = np.isfinite(a) & np.isfinite(b)
+    if valid_mask.sum() < 2:
+        return 0.0
+    left = a[valid_mask]
+    right = b[valid_mask]
+    if np.isclose(left.std(), 0.0) or np.isclose(right.std(), 0.0):
+        return 0.0
+    return float(np.corrcoef(left, right)[0, 1])
+
+
+def _max_lag_correlation_array(a: np.ndarray, b: np.ndarray, max_lag: int) -> float:
+    best = _array_corr(a, b)
+    for lag in range(1, max_lag + 1):
+        best = max(best, _array_corr(a[lag:], b[:-lag]), key=abs)
+        best = max(best, _array_corr(a[:-lag], b[lag:]), key=abs)
+    return float(best)
 
 
 def _synchronous_extrema_metrics(
@@ -141,21 +160,35 @@ def build_inter_matrix(
 ) -> pd.DataFrame:
     pair_labels = [f"{left}__{right}" for left, right in combinations(channels, 2)]
     matrix = pd.DataFrame(index=INTER_FEATURES, columns=pair_labels, dtype=float)
+    series_by_channel = {
+        channel: pd.to_numeric(window_frame[f"smoothed_{channel}"], errors="coerce").to_numpy(dtype=float)
+        for channel in channels
+    }
+    diff_mean_by_channel = {
+        channel: float(
+            pd.to_numeric(window_frame[f"diff1_{channel}"], errors="coerce").abs().mean()
+        )
+        for channel in channels
+    }
+    events_by_channel = {
+        channel: [event for event in window_events if event.channel == channel]
+        for channel in channels
+    }
     for left, right in combinations(channels, 2):
         label = f"{left}__{right}"
-        left_series = window_frame[f"smoothed_{left}"].astype(float)
-        right_series = window_frame[f"smoothed_{right}"].astype(float)
-        left_diff = window_frame[f"diff1_{left}"].astype(float).abs().mean()
-        right_diff = window_frame[f"diff1_{right}"].astype(float).abs().mean()
-        left_events = [event for event in window_events if event.channel == left]
-        right_events = [event for event in window_events if event.channel == right]
+        left_series = series_by_channel[left]
+        right_series = series_by_channel[right]
+        left_diff = diff_mean_by_channel[left]
+        right_diff = diff_mean_by_channel[right]
+        left_events = events_by_channel[left]
+        right_events = events_by_channel[right]
         sync_count, mean_lag = _synchronous_extrema_metrics(
             left_events,
             right_events,
             event_match_tolerance_steps,
         )
-        matrix.loc["correlation", label] = safe_corr(left_series, right_series)
-        matrix.loc["lag_correlation", label] = _max_lag_correlation(
+        matrix.loc["correlation", label] = _array_corr(left_series, right_series)
+        matrix.loc["lag_correlation", label] = _max_lag_correlation_array(
             left_series,
             right_series,
             correlation_lag_steps,
@@ -175,9 +208,9 @@ def _compound_event_flag(
     wind_threshold = upper_thresholds.get("wind_speed", 0.0)
     rain_threshold = upper_thresholds.get("rainfall", 0.0)
     mask = (
-        window_frame["wind_speed"].astype(float).fillna(0.0) >= wind_threshold
+        pd.to_numeric(window_frame["wind_speed"], errors="coerce").fillna(0.0) >= wind_threshold
     ) & (
-        window_frame["rainfall"].astype(float).fillna(0.0) >= rain_threshold
+        pd.to_numeric(window_frame["rainfall"], errors="coerce").fillna(0.0) >= rain_threshold
     )
     return float(mask.any())
 
@@ -192,7 +225,7 @@ def build_peak_hazard_matrix(
     matrix = pd.DataFrame(index=PEAK_HAZARD_FEATURES, columns=channels, dtype=float)
     compound_flag = _compound_event_flag(window_frame, upper_thresholds)
     for channel in channels:
-        series = window_frame[channel].astype(float).dropna()
+        series = pd.to_numeric(window_frame[channel], errors="coerce").dropna()
         peaks = [peak for peak in window_peaks if peak.channel == channel]
         upper = upper_thresholds[channel]
         lower = lower_thresholds[channel]

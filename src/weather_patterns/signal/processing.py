@@ -6,6 +6,10 @@ import pandas as pd
 from weather_patterns.config import SmoothingConfig
 
 
+def _coerce_numeric(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(series, errors="coerce")
+
+
 def _savgol_is_available() -> bool:
     try:
         from scipy.signal import savgol_filter  # noqa: F401
@@ -21,7 +25,7 @@ def smooth_channels(
 ) -> pd.DataFrame:
     smoothed = pd.DataFrame(index=frame.index)
     for channel in channels:
-        series = frame[channel].astype(float)
+        series = _coerce_numeric(frame[channel])
         if config.method == "rolling_mean":
             smoothed[channel] = series.rolling(
                 window=config.window,
@@ -76,7 +80,7 @@ def build_signal_frame(
 
 
 def safe_corr(a: pd.Series, b: pd.Series) -> float:
-    joined = pd.concat([a, b], axis=1).dropna()
+    joined = pd.concat([_coerce_numeric(a), _coerce_numeric(b)], axis=1).dropna()
     if len(joined) < 2:
         return 0.0
     left = joined.iloc[:, 0].to_numpy(dtype=float)
@@ -90,7 +94,7 @@ def safe_corr(a: pd.Series, b: pd.Series) -> float:
 
 
 def safe_variance(values: pd.Series) -> float:
-    clean = values.dropna()
+    clean = _coerce_numeric(values).dropna()
     if clean.empty:
         return 0.0
     return float(np.var(clean.to_numpy(dtype=float)))

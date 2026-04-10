@@ -32,7 +32,7 @@ def _walk_right(series: pd.Series, peak_index: int, sign: str) -> int:
 def detect_peaks(signal_frame: pd.DataFrame, channels: list[str], time_column: str = "date") -> list[PeakEvent]:
     peaks: list[PeakEvent] = []
     for channel in channels:
-        series = signal_frame[f"smoothed_{channel}"].astype(float)
+        series = pd.to_numeric(signal_frame[f"smoothed_{channel}"], errors="coerce")
         for idx in range(1, len(series) - 1):
             prev_value = series.iloc[idx - 1]
             current_value = series.iloc[idx]

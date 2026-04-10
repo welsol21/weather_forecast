@@ -4,6 +4,7 @@ import numpy as np
 from typing import Any
 
 from weather_patterns.config import PipelineConfig
+from weather_patterns.forecasting.decoding import decode_forecast_result
 from weather_patterns.forecasting.torch_sequence import TorchSequencePredictor
 from weather_patterns.models import ForecastResult, PipelineArtifacts
 
@@ -20,11 +21,15 @@ def predict_future_pattern_sequence(
     history_windows = artifacts.pattern_windows[-history_window_count:]
     history_pattern_matrix = np.vstack([window.feature_vector for window in history_windows])
     forecast_time = history_windows[-1].end_time
-    return predictor.predict(
+    raw_result = predictor.predict(
         history_pattern_matrix=history_pattern_matrix,
         forecast_time=forecast_time,
         horizon_steps=config.window.forecast_horizon_steps,
         prototypes=artifacts.discovery_result.prototypes,
+    )
+    return decode_forecast_result(
+        raw_result,
+        channels=artifacts.dataset.channel_columns,
     )
 
 

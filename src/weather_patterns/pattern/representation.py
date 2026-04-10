@@ -211,18 +211,82 @@ def _array_corr_finite(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.dot(left_centered, right_centered) / (left_scale * right_scale))
 
 
+def _corr_from_sums(
+    sum_left: float,
+    sum_right: float,
+    sum_left_sq: float,
+    sum_right_sq: float,
+    sum_cross: float,
+    count: int,
+) -> float:
+    if count < 2:
+        return 0.0
+    left_var_term = sum_left_sq - (sum_left * sum_left) / count
+    right_var_term = sum_right_sq - (sum_right * sum_right) / count
+    if left_var_term <= 0.0 or right_var_term <= 0.0:
+        return 0.0
+    cross_term = sum_cross - (sum_left * sum_right) / count
+    return float(cross_term / np.sqrt(left_var_term * right_var_term))
+
+
+def _segment_sum(prefix: np.ndarray, start: int, end: int) -> float:
+    return float(prefix[end] - prefix[start])
+
+
 def _max_lag_correlation_array(a: np.ndarray, b: np.ndarray, max_lag: int) -> float:
     finite = np.isfinite(a).all() and np.isfinite(b).all()
-    corr_fn = _array_corr_finite if finite else _array_corr
-    best = corr_fn(a, b)
+    if not finite:
+        corr_fn = _array_corr
+        best = corr_fn(a, b)
+        best_abs = abs(best)
+        for lag in range(1, max_lag + 1):
+            candidate = corr_fn(a[lag:], b[:-lag])
+            candidate_abs = abs(candidate)
+            if candidate_abs > best_abs:
+                best = candidate
+                best_abs = candidate_abs
+            candidate = corr_fn(a[:-lag], b[lag:])
+            candidate_abs = abs(candidate)
+            if candidate_abs > best_abs:
+                best = candidate
+                best_abs = candidate_abs
+        return float(best)
+
+    left_prefix = np.concatenate(([0.0], np.cumsum(a)))
+    right_prefix = np.concatenate(([0.0], np.cumsum(b)))
+    left_sq_prefix = np.concatenate(([0.0], np.cumsum(a * a)))
+    right_sq_prefix = np.concatenate(([0.0], np.cumsum(b * b)))
+    best = _corr_from_sums(
+        sum_left=float(left_prefix[-1]),
+        sum_right=float(right_prefix[-1]),
+        sum_left_sq=float(left_sq_prefix[-1]),
+        sum_right_sq=float(right_sq_prefix[-1]),
+        sum_cross=float(np.dot(a, b)),
+        count=len(a),
+    )
     best_abs = abs(best)
     for lag in range(1, max_lag + 1):
-        candidate = corr_fn(a[lag:], b[:-lag])
+        count = len(a) - lag
+        candidate = _corr_from_sums(
+            sum_left=_segment_sum(left_prefix, lag, len(a)),
+            sum_right=_segment_sum(right_prefix, 0, count),
+            sum_left_sq=_segment_sum(left_sq_prefix, lag, len(a)),
+            sum_right_sq=_segment_sum(right_sq_prefix, 0, count),
+            sum_cross=float(np.dot(a[lag:], b[:-lag])),
+            count=count,
+        )
         candidate_abs = abs(candidate)
         if candidate_abs > best_abs:
             best = candidate
             best_abs = candidate_abs
-        candidate = corr_fn(a[:-lag], b[lag:])
+        candidate = _corr_from_sums(
+            sum_left=_segment_sum(left_prefix, 0, count),
+            sum_right=_segment_sum(right_prefix, lag, len(b)),
+            sum_left_sq=_segment_sum(left_sq_prefix, 0, count),
+            sum_right_sq=_segment_sum(right_sq_prefix, lag, len(b)),
+            sum_cross=float(np.dot(a[:-lag], b[lag:])),
+            count=count,
+        )
         candidate_abs = abs(candidate)
         if candidate_abs > best_abs:
             best = candidate
@@ -267,6 +331,7 @@ def build_inter_matrix(
     events_by_channel: dict[str, list[ExtremaEvent]] | None = None,
 ) -> pd.DataFrame:
     pair_labels = [f"{left}__{right}" for left, right in combinations(channels, 2)]
+    channel_pairs = list(combinations(range(len(channels)), 2))
     matrix = np.zeros((len(INTER_FEATURES), len(pair_labels)), dtype=float)
     feature_index = {name: index for index, name in enumerate(INTER_FEATURES)}
     series_by_channel = smoothed_series or {
@@ -277,20 +342,21 @@ def build_inter_matrix(
         channel: pd.to_numeric(window_frame[f"diff1_{channel}"], errors="coerce").to_numpy(dtype=float)
         for channel in channels
     }
-    diff_mean_by_channel = {
-        channel: float(np.mean(np.abs(active_diff1_series[channel][np.isfinite(active_diff1_series[channel])])))
-        if np.isfinite(active_diff1_series[channel]).any()
-        else 0.0
-        for channel in channels
-    }
+    series_list = [series_by_channel[channel] for channel in channels]
+    diff_mean_list: list[float] = []
+    for channel in channels:
+        diff_values = active_diff1_series[channel]
+        finite_diff_values = diff_values[np.isfinite(diff_values)]
+        diff_mean_list.append(float(np.mean(np.abs(finite_diff_values))) if finite_diff_values.size else 0.0)
     active_events_by_channel = events_by_channel or _group_events_by_channel(window_events, channels)
-    for pair_index, (left, right) in enumerate(combinations(channels, 2)):
-        left_series = series_by_channel[left]
-        right_series = series_by_channel[right]
-        left_diff = diff_mean_by_channel[left]
-        right_diff = diff_mean_by_channel[right]
-        left_events = active_events_by_channel[left]
-        right_events = active_events_by_channel[right]
+    events_list = [active_events_by_channel[channel] for channel in channels]
+    for pair_index, (left_index, right_index) in enumerate(channel_pairs):
+        left_series = series_list[left_index]
+        right_series = series_list[right_index]
+        left_diff = diff_mean_list[left_index]
+        right_diff = diff_mean_list[right_index]
+        left_events = events_list[left_index]
+        right_events = events_list[right_index]
         sync_count, mean_lag = _synchronous_extrema_metrics(
             left_events,
             right_events,

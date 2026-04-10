@@ -59,10 +59,19 @@ class HazardConfig:
 
 @dataclass(frozen=True)
 class DiscoveryConfig:
-    strategy: str = "kmeans"
-    n_clusters: int = 8
+    strategy: str = "structural"
+    n_clusters: int = 16
+    auto_select_k: bool = True
+    min_clusters: int = 8
+    max_clusters: int = 32
+    cluster_step: int = 4
     max_iterations: int = 50
     random_seed: int = 42
+    quality_sample_size: int = 2048
+    candidate_distance_quantiles: tuple[float, ...] = (0.1, 0.15, 0.2, 0.25, 0.3)
+    min_pattern_count: int = 12
+    max_pattern_count: int = 96
+    min_cluster_size: int = 24
 
 
 @dataclass(frozen=True)

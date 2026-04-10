@@ -10,6 +10,7 @@ from weather_patterns.config import PipelineConfig
 from weather_patterns.data.loading import apply_quality_masks, load_weather_dataset
 from weather_patterns.discovery.base import DiscoveryInput
 from weather_patterns.discovery.kmeans import NumpyKMeansDiscovery
+from weather_patterns.discovery.structural import StructuralPatternDiscovery
 from weather_patterns.events.extrema import detect_extrema
 from weather_patterns.events.peaks import detect_peaks
 from weather_patterns.forecasting.samples import build_forecast_samples
@@ -77,10 +78,18 @@ def run_pipeline(csv_path: str | Path, config: PipelineConfig | None = None) -> 
         if pattern_windows
         else np.empty((0, 0))
     )
-    discovery = NumpyKMeansDiscovery(active_config.discovery).fit_predict(
+    if active_config.discovery.strategy == "structural":
+        discovery_strategy = StructuralPatternDiscovery(active_config.discovery)
+    elif active_config.discovery.strategy == "kmeans":
+        discovery_strategy = NumpyKMeansDiscovery(active_config.discovery)
+    else:
+        raise ValueError(f"Unsupported discovery strategy: {active_config.discovery.strategy}")
+
+    discovery = discovery_strategy.fit_predict(
         DiscoveryInput(
             window_ids=[window.window_id for window in pattern_windows],
             feature_matrix=feature_matrix,
+            pattern_windows=pattern_windows,
         )
     )
     forecast_samples = build_forecast_samples(

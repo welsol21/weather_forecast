@@ -43,6 +43,10 @@ class TorchSequencePredictor(SequencePredictor):
         self._feature_dim: int | None = None
         self._forecast_window_count: int | None = None
         self._history_window_count: int | None = None
+        self._input_mean: np.ndarray | None = None
+        self._input_std: np.ndarray | None = None
+        self._target_mean: np.ndarray | None = None
+        self._target_std: np.ndarray | None = None
 
     def _lazy_import_torch(self) -> None:
         if self._torch is None:
@@ -106,13 +110,23 @@ class TorchSequencePredictor(SequencePredictor):
         )
         loss_fn = self._nn.MSELoss()
 
+        self._input_mean = dataset.history_pattern_tensor.mean(axis=(0, 1), keepdims=True).astype(np.float32)
+        self._input_std = dataset.history_pattern_tensor.std(axis=(0, 1), keepdims=True).astype(np.float32)
+        self._input_std = np.where(self._input_std > 1e-6, self._input_std, 1.0).astype(np.float32)
+        self._target_mean = dataset.target_pattern_tensor.mean(axis=(0, 1), keepdims=True).astype(np.float32)
+        self._target_std = dataset.target_pattern_tensor.std(axis=(0, 1), keepdims=True).astype(np.float32)
+        self._target_std = np.where(self._target_std > 1e-6, self._target_std, 1.0).astype(np.float32)
+
+        normalized_history = (dataset.history_pattern_tensor - self._input_mean) / self._input_std
+        normalized_target = (dataset.target_pattern_tensor - self._target_mean) / self._target_std
+
         history_pattern_tensor = torch.as_tensor(
-            dataset.history_pattern_tensor,
+            normalized_history,
             dtype=torch.float32,
             device=self.device,
         )
         target_pattern_tensor = torch.as_tensor(
-            dataset.target_pattern_tensor,
+            normalized_target,
             dtype=torch.float32,
             device=self.device,
         )
@@ -137,6 +151,8 @@ class TorchSequencePredictor(SequencePredictor):
             raise RuntimeError("The predictor must be trained before it can be saved.")
         if self._history_window_count is None:
             raise RuntimeError("Missing history window count for checkpoint export.")
+        if self._input_mean is None or self._input_std is None or self._target_mean is None or self._target_std is None:
+            raise RuntimeError("Missing normalization statistics for checkpoint export.")
 
         self._lazy_import_torch()
         torch = self._torch
@@ -148,6 +164,10 @@ class TorchSequencePredictor(SequencePredictor):
                 "feature_dim": self._feature_dim,
                 "forecast_window_count": self._forecast_window_count,
                 "history_window_count": self._history_window_count,
+                "input_mean": self._input_mean,
+                "input_std": self._input_std,
+                "target_mean": self._target_mean,
+                "target_std": self._target_std,
                 "model_config": {
                     "hidden_size": self.model_config.hidden_size,
                     "num_layers": self.model_config.num_layers,
@@ -181,6 +201,10 @@ class TorchSequencePredictor(SequencePredictor):
         )
         predictor._model.load_state_dict(checkpoint["state_dict"])
         predictor._history_window_count = int(checkpoint["history_window_count"])
+        predictor._input_mean = np.asarray(checkpoint["input_mean"], dtype=np.float32)
+        predictor._input_std = np.asarray(checkpoint["input_std"], dtype=np.float32)
+        predictor._target_mean = np.asarray(checkpoint["target_mean"], dtype=np.float32)
+        predictor._target_std = np.asarray(checkpoint["target_std"], dtype=np.float32)
         predictor._model.eval()
         return predictor
 
@@ -195,6 +219,8 @@ class TorchSequencePredictor(SequencePredictor):
             raise RuntimeError("The predictor must be trained before inference.")
         if self._history_window_count is None:
             raise RuntimeError("Missing history window count for inference.")
+        if self._input_mean is None or self._input_std is None or self._target_mean is None or self._target_std is None:
+            raise RuntimeError("The predictor must be trained before inference normalization is available.")
         if history_pattern_matrix.shape[1] != self._feature_dim:
             raise ValueError("Unexpected history pattern feature dimension.")
         if history_pattern_matrix.shape[0] != self._history_window_count:
@@ -202,8 +228,9 @@ class TorchSequencePredictor(SequencePredictor):
 
         self._lazy_import_torch()
         torch = self._torch
+        normalized_history = (history_pattern_matrix.astype(np.float32) - self._input_mean[0]) / self._input_std[0]
         history_tensor = torch.as_tensor(
-            history_pattern_matrix[None, :, :],
+            normalized_history[None, :, :],
             dtype=torch.float32,
             device=self.device,
         )
@@ -211,6 +238,7 @@ class TorchSequencePredictor(SequencePredictor):
         with torch.no_grad():
             predicted_pattern_tensor = self._model(history_tensor)
         predicted_pattern_matrix = predicted_pattern_tensor[0].detach().cpu().numpy()
+        predicted_pattern_matrix = predicted_pattern_matrix * self._target_std[0] + self._target_mean[0]
         predicted_pattern_ids = _nearest_pattern_ids(predicted_pattern_matrix, prototypes)
 
         return ForecastResult(

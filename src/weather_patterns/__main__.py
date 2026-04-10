@@ -10,6 +10,10 @@ from weather_patterns.forecasting.inference import (
     predict_future_pattern_sequence,
     summarize_forecast_result,
 )
+from weather_patterns.forecasting.evaluation import (
+    evaluate_sequence_backtest,
+    write_evaluation_summary,
+)
 from weather_patterns.forecasting.runtime import GpuRuntimeRequirementError
 from weather_patterns.forecasting.training import (
     summarize_training_dataset,
@@ -51,6 +55,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--checkpoint-path",
         default=None,
         help="Optional checkpoint to load instead of retraining inline",
+    )
+
+    evaluate_sequence_parser = subparsers.add_parser(
+        "evaluate-sequence-model",
+        help="Run a chronological train/validation/test backtest and report 1..24h metrics in original channels.",
+    )
+    evaluate_sequence_parser.add_argument("--csv", required=True, help="Path to hly4935_subset.csv")
+    evaluate_sequence_parser.add_argument("--max-rows", type=int, default=None, help="Optional row limit for quick runs")
+    evaluate_sequence_parser.add_argument(
+        "--output-path",
+        default="artifacts/sequence_evaluation.json",
+        help="Where to save the evaluation summary JSON",
+    )
+    evaluate_sequence_parser.add_argument(
+        "--sample-limit",
+        type=int,
+        default=None,
+        help="Optional cap on validation/test samples per split for faster backtests",
     )
     return parser
 
@@ -100,6 +122,18 @@ def main() -> None:
             payload = summarize_forecast_result(result)
             if args.checkpoint_path:
                 payload["checkpoint_path"] = args.checkpoint_path
+            print(json.dumps(payload, indent=2))
+            return
+
+        if args.command == "evaluate-sequence-model":
+            config = PipelineConfig(max_rows=args.max_rows)
+            artifacts = run_pipeline(args.csv, config)
+            payload = evaluate_sequence_backtest(
+                artifacts,
+                config,
+                sample_limit=args.sample_limit,
+            )
+            payload["output_path"] = str(write_evaluation_summary(payload, args.output_path))
             print(json.dumps(payload, indent=2))
             return
     except GpuRuntimeRequirementError as exc:

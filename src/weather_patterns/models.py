@@ -107,6 +107,7 @@ class PatternPrototype:
     pattern_id: int
     centroid: np.ndarray
     member_window_ids: list[int]
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -192,6 +193,11 @@ class ForecastResult:
 class DiscoveryResult:
     labels_by_window_id: dict[int, int]
     prototypes: list[PatternPrototype]
+    strategy: str = ""
+    selected_cluster_count: int = 0
+    selected_quality_score: float = 0.0
+    selection_metric_name: str = ""
+    candidate_quality: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -233,4 +239,12 @@ class PipelineArtifacts:
             "forecast_samples": len(self.forecast_samples),
             "forecast_target_window_count": max(target_window_counts) if target_window_counts else 0,
             "discovered_patterns": len(self.discovery_result.prototypes),
+            "discovery_strategy": self.discovery_result.strategy,
+            "selected_cluster_count": int(self.discovery_result.selected_cluster_count),
+            "selected_cluster_quality": float(self.discovery_result.selected_quality_score),
+            "discovery_selection_metric": self.discovery_result.selection_metric_name,
+            "discovery_candidate_quality": {
+                str(key): float(value)
+                for key, value in sorted(self.discovery_result.candidate_quality.items())
+            },
         }

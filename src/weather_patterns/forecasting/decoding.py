@@ -159,6 +159,107 @@ def _interpolate_interval_values(
     return interpolated.astype(float).tolist()
 
 
+def _interpolate_interval_peak_hazard(
+    source_timestamps: list[pd.Timestamp],
+    source_peak_hazard: list[dict[str, dict[str, float]]],
+    interval_timestamps: list[pd.Timestamp],
+    channels: list[str],
+) -> list[dict[str, dict[str, float]]]:
+    if not source_peak_hazard or not interval_timestamps:
+        return []
+    if len(source_peak_hazard) != len(source_timestamps):
+        raise ValueError("Source hazard entries and timestamps must have the same length.")
+    if len(source_peak_hazard) == 1:
+        return [source_peak_hazard[0] for _ in interval_timestamps]
+
+    source_x = np.asarray(
+        [(timestamp - source_timestamps[0]).total_seconds() / 3600.0 for timestamp in source_timestamps],
+        dtype=float,
+    )
+    target_x = np.asarray(
+        [(timestamp - source_timestamps[0]).total_seconds() / 3600.0 for timestamp in interval_timestamps],
+        dtype=float,
+    )
+
+    interval_peak_hazard: list[dict[str, dict[str, float]]] = []
+    for target in target_x:
+        interpolated_entry: dict[str, dict[str, float]] = {}
+        for channel in channels:
+            channel_features: dict[str, float] = {}
+            for feature_name in PEAK_HAZARD_FEATURES:
+                source_y = np.asarray(
+                    [step_hazard[channel][feature_name] for step_hazard in source_peak_hazard],
+                    dtype=float,
+                )
+                channel_features[feature_name] = float(
+                    np.interp(target, source_x, source_y, left=source_y[0], right=source_y[-1])
+                )
+            interpolated_entry[channel] = channel_features
+        interval_peak_hazard.append(interpolated_entry)
+    return interval_peak_hazard
+
+
+def _interpolate_interval_time_placeholders(
+    source_timestamps: list[pd.Timestamp],
+    source_time_placeholders: list[TimePlaceholders],
+    interval_timestamps: list[pd.Timestamp],
+    channels: list[str],
+) -> list[TimePlaceholders]:
+    if not source_time_placeholders or not interval_timestamps:
+        return []
+    if len(source_time_placeholders) != len(source_timestamps):
+        raise ValueError("Source time placeholder entries and timestamps must have the same length.")
+    if len(source_time_placeholders) == 1:
+        return [source_time_placeholders[0] for _ in interval_timestamps]
+
+    source_x = np.asarray(
+        [(timestamp - source_timestamps[0]).total_seconds() / 3600.0 for timestamp in source_timestamps],
+        dtype=float,
+    )
+    target_x = np.asarray(
+        [(timestamp - source_timestamps[0]).total_seconds() / 3600.0 for timestamp in interval_timestamps],
+        dtype=float,
+    )
+
+    def interpolate_scalar(values: list[float]) -> list[float]:
+        source_y = np.asarray(values, dtype=float)
+        return np.interp(target_x, source_x, source_y, left=source_y[0], right=source_y[-1]).astype(float).tolist()
+
+    time_step_hours = interpolate_scalar([item.time_step_hours for item in source_time_placeholders])
+    window_length_steps = interpolate_scalar([float(item.window_length_steps) for item in source_time_placeholders])
+    forecast_horizon_steps = interpolate_scalar([float(item.forecast_horizon_steps) for item in source_time_placeholders])
+    mean_inter_event_gap_steps = interpolate_scalar([item.mean_inter_event_gap_steps for item in source_time_placeholders])
+    var_inter_event_gap_steps = interpolate_scalar([item.var_inter_event_gap_steps for item in source_time_placeholders])
+    mean_peak_width_steps = interpolate_scalar([item.mean_peak_width_steps for item in source_time_placeholders])
+    max_peak_width_steps = interpolate_scalar([item.max_peak_width_steps for item in source_time_placeholders])
+    duration_maps = {
+        channel: interpolate_scalar(
+            [item.duration_over_threshold_by_channel.get(channel, 0.0) for item in source_time_placeholders]
+        )
+        for channel in channels
+    }
+
+    interval_time_placeholders: list[TimePlaceholders] = []
+    for index in range(len(interval_timestamps)):
+        interval_time_placeholders.append(
+            TimePlaceholders(
+                time_step_hours=float(time_step_hours[index]),
+                window_length_steps=max(int(round(window_length_steps[index])), 1),
+                forecast_horizon_steps=max(int(round(forecast_horizon_steps[index])), 1),
+                mean_inter_event_gap_steps=float(mean_inter_event_gap_steps[index]),
+                var_inter_event_gap_steps=float(var_inter_event_gap_steps[index]),
+                mean_peak_width_steps=float(mean_peak_width_steps[index]),
+                max_peak_width_steps=float(max_peak_width_steps[index]),
+                duration_over_threshold_by_channel={
+                    channel: float(duration_maps[channel][index])
+                    for channel in channels
+                },
+                normalized_event_positions=[],
+            )
+        )
+    return interval_time_placeholders
+
+
 def decode_forecast_result(
     result: ForecastResult,
     channels: list[str],
@@ -203,6 +304,18 @@ def decode_forecast_result(
         )
         for channel in channels
     }
+    predicted_interval_time_placeholders = _interpolate_interval_time_placeholders(
+        source_timestamps=predicted_timestamps,
+        source_time_placeholders=predicted_time_placeholders,
+        interval_timestamps=interval_timestamps,
+        channels=channels,
+    )
+    predicted_interval_peak_hazard = _interpolate_interval_peak_hazard(
+        source_timestamps=predicted_timestamps,
+        source_peak_hazard=predicted_peak_hazard,
+        interval_timestamps=interval_timestamps,
+        channels=channels,
+    )
 
     result.predicted_values = predicted_values
     result.predicted_timestamps = predicted_timestamps
@@ -210,4 +323,6 @@ def decode_forecast_result(
     result.predicted_interval_values = predicted_interval_values
     result.predicted_time_placeholders = predicted_time_placeholders
     result.predicted_peak_hazard = predicted_peak_hazard
+    result.predicted_interval_time_placeholders = predicted_interval_time_placeholders
+    result.predicted_interval_peak_hazard = predicted_interval_peak_hazard
     return result

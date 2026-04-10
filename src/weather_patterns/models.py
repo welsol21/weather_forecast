@@ -136,6 +136,8 @@ class ForecastResult:
     predicted_interval_values: dict[str, list[float]]
     predicted_time_placeholders: list[TimePlaceholders]
     predicted_peak_hazard: list[dict[str, dict[str, float]]]
+    predicted_interval_time_placeholders: list[TimePlaceholders]
+    predicted_interval_peak_hazard: list[dict[str, dict[str, float]]]
 
     def to_value_frame(self) -> pd.DataFrame:
         if not self.predicted_values:
@@ -166,6 +168,22 @@ class ForecastResult:
             return pd.DataFrame(index=pd.Index(self.predicted_interval_timestamps, name="timestamp"))
         return pd.DataFrame(
             self.predicted_interval_values,
+            index=pd.Index(self.predicted_interval_timestamps, name="timestamp"),
+        )
+
+    def to_interval_peak_hazard_frame(self) -> pd.DataFrame:
+        if not self.predicted_interval_peak_hazard:
+            return pd.DataFrame(index=pd.Index(self.predicted_interval_timestamps, name="timestamp"))
+
+        rows: list[dict[str, float]] = []
+        for step_hazard in self.predicted_interval_peak_hazard:
+            row: dict[str, float] = {}
+            for channel, features in step_hazard.items():
+                for feature_name, value in features.items():
+                    row[f"{channel}__{feature_name}"] = value
+            rows.append(row)
+        return pd.DataFrame(
+            rows,
             index=pd.Index(self.predicted_interval_timestamps, name="timestamp"),
         )
 

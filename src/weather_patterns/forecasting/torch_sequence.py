@@ -225,4 +225,6 @@ class TorchSequencePredictor(SequencePredictor):
             predicted_interval_values={},
             predicted_time_placeholders=[],
             predicted_peak_hazard=[],
+            predicted_interval_time_placeholders=[],
+            predicted_interval_peak_hazard=[],
         )

@@ -18,20 +18,32 @@ def build_extrema_windows(
     if max_start <= 0:
         return windows
 
+    event_left = 0
+    event_right = 0
+    peak_left = 0
+    peak_right = 0
+
     for window_id, start_index in enumerate(range(0, max_start, config.stride_steps)):
         end_index = start_index + config.length_steps - 1
         start_time = pd.Timestamp(signal_frame.iloc[start_index][time_column])
         end_time = pd.Timestamp(signal_frame.iloc[end_index][time_column])
-        events_in_window = [
-            event
-            for event in extrema_events
-            if start_index <= event.index <= end_index
-        ]
-        peaks_in_window = [
-            peak
-            for peak in peak_events
-            if start_index <= peak.index <= end_index
-        ]
+
+        while event_left < len(extrema_events) and extrema_events[event_left].index < start_index:
+            event_left += 1
+        if event_right < event_left:
+            event_right = event_left
+        while event_right < len(extrema_events) and extrema_events[event_right].index <= end_index:
+            event_right += 1
+        events_in_window = extrema_events[event_left:event_right]
+
+        while peak_left < len(peak_events) and peak_events[peak_left].index < start_index:
+            peak_left += 1
+        if peak_right < peak_left:
+            peak_right = peak_left
+        while peak_right < len(peak_events) and peak_events[peak_right].index <= end_index:
+            peak_right += 1
+        peaks_in_window = peak_events[peak_left:peak_right]
+
         windows.append(
             ExtremaWindow(
                 window_id=window_id,

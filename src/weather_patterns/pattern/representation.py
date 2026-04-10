@@ -89,14 +89,47 @@ def _variance_array(values: np.ndarray) -> float:
     return float(np.var(clean))
 
 
+def _window_channel_arrays(
+    window_frame: pd.DataFrame,
+    channels: list[str],
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
+    raw_series = {
+        channel: pd.to_numeric(window_frame[channel], errors="coerce").to_numpy(dtype=float)
+        for channel in channels
+    }
+    smoothed_series = {
+        channel: pd.to_numeric(window_frame[f"smoothed_{channel}"], errors="coerce").to_numpy(dtype=float)
+        for channel in channels
+    }
+    diff1_series = {
+        channel: pd.to_numeric(window_frame[f"diff1_{channel}"], errors="coerce").to_numpy(dtype=float)
+        for channel in channels
+    }
+    diff2_series = {
+        channel: pd.to_numeric(window_frame[f"diff2_{channel}"], errors="coerce").to_numpy(dtype=float)
+        for channel in channels
+    }
+    return raw_series, smoothed_series, diff1_series, diff2_series
+
+
 def build_intra_matrix(
     window_frame: pd.DataFrame,
     window_events: list[ExtremaEvent],
     channels: list[str],
+    smoothed_series: dict[str, np.ndarray] | None = None,
+    diff2_series: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     matrix = np.zeros((len(INTRA_FEATURES), len(channels)), dtype=float)
     feature_index = {name: index for index, name in enumerate(INTRA_FEATURES)}
     channel_index = {name: index for index, name in enumerate(channels)}
+    active_smoothed_series = smoothed_series or {
+        channel: pd.to_numeric(window_frame[f"smoothed_{channel}"], errors="coerce").to_numpy(dtype=float)
+        for channel in channels
+    }
+    active_diff2_series = diff2_series or {
+        channel: pd.to_numeric(window_frame[f"diff2_{channel}"], errors="coerce").to_numpy(dtype=float)
+        for channel in channels
+    }
     event_stats: dict[str, tuple[float, float]] = {}
     for channel in channels:
         channel_events = [event for event in window_events if event.channel == channel]
@@ -107,8 +140,8 @@ def build_intra_matrix(
 
     for channel in channels:
         column_index = channel_index[channel]
-        series = pd.to_numeric(window_frame[f"smoothed_{channel}"], errors="coerce").to_numpy(dtype=float)
-        diff2 = pd.to_numeric(window_frame[f"diff2_{channel}"], errors="coerce").to_numpy(dtype=float)
+        series = active_smoothed_series[channel]
+        diff2 = active_diff2_series[channel]
         clean = series[np.isfinite(series)]
         clean_diff2 = diff2[np.isfinite(diff2)]
         extrema_count, extrema_amplitude_sum = event_stats[channel]
@@ -186,18 +219,24 @@ def build_inter_matrix(
     channels: list[str],
     correlation_lag_steps: int,
     event_match_tolerance_steps: int,
+    smoothed_series: dict[str, np.ndarray] | None = None,
+    diff1_series: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     pair_labels = [f"{left}__{right}" for left, right in combinations(channels, 2)]
     matrix = np.zeros((len(INTER_FEATURES), len(pair_labels)), dtype=float)
     feature_index = {name: index for index, name in enumerate(INTER_FEATURES)}
-    series_by_channel = {
+    series_by_channel = smoothed_series or {
         channel: pd.to_numeric(window_frame[f"smoothed_{channel}"], errors="coerce").to_numpy(dtype=float)
         for channel in channels
     }
+    active_diff1_series = diff1_series or {
+        channel: pd.to_numeric(window_frame[f"diff1_{channel}"], errors="coerce").to_numpy(dtype=float)
+        for channel in channels
+    }
     diff_mean_by_channel = {
-        channel: float(
-            pd.to_numeric(window_frame[f"diff1_{channel}"], errors="coerce").abs().mean()
-        )
+        channel: float(np.mean(np.abs(active_diff1_series[channel][np.isfinite(active_diff1_series[channel])])))
+        if np.isfinite(active_diff1_series[channel]).any()
+        else 0.0
         for channel in channels
     }
     events_by_channel = {
@@ -249,6 +288,7 @@ def build_peak_hazard_matrix(
     channels: list[str],
     upper_thresholds: dict[str, float],
     lower_thresholds: dict[str, float],
+    raw_series: dict[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     matrix = np.zeros((len(PEAK_HAZARD_FEATURES), len(channels)), dtype=float)
     feature_index = {name: index for index, name in enumerate(PEAK_HAZARD_FEATURES)}
@@ -260,7 +300,7 @@ def build_peak_hazard_matrix(
     }
     for channel in channels:
         column_index = channel_index[channel]
-        series = pd.to_numeric(window_frame[channel], errors="coerce").to_numpy(dtype=float)
+        series = raw_series[channel] if raw_series is not None else pd.to_numeric(window_frame[channel], errors="coerce").to_numpy(dtype=float)
         clean_series = series[np.isfinite(series)]
         peaks = peaks_by_channel[channel]
         upper = upper_thresholds[channel]
@@ -336,13 +376,22 @@ def build_pattern_window(
     lower_thresholds: dict[str, float],
 ) -> PatternWindow:
     window_frame = signal_frame.iloc[extrema_window.start_index : extrema_window.end_index + 1]
-    intra = build_intra_matrix(window_frame, extrema_window.events, channels)
+    raw_series, smoothed_series, diff1_series, diff2_series = _window_channel_arrays(window_frame, channels)
+    intra = build_intra_matrix(
+        window_frame,
+        extrema_window.events,
+        channels,
+        smoothed_series=smoothed_series,
+        diff2_series=diff2_series,
+    )
     inter = build_inter_matrix(
         window_frame,
         extrema_window.events,
         channels,
         config.window.correlation_lag_steps,
         config.window.event_match_tolerance_steps,
+        smoothed_series=smoothed_series,
+        diff1_series=diff1_series,
     )
     peak_hazard = build_peak_hazard_matrix(
         window_frame,
@@ -350,6 +399,7 @@ def build_pattern_window(
         channels,
         upper_thresholds,
         lower_thresholds,
+        raw_series=raw_series,
     )
     time_placeholders = build_time_placeholders(
         extrema_window=extrema_window,

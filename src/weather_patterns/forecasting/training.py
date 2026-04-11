@@ -5,7 +5,10 @@ from typing import Any
 from pathlib import Path
 
 from weather_patterns.config import PipelineConfig
-from weather_patterns.forecasting.dataset import build_forecast_training_dataset
+from weather_patterns.forecasting.dataset import (
+    build_forecast_training_dataset,
+    load_forecast_training_dataset_jsonl,
+)
 from weather_patterns.forecasting.torch_sequence import TorchSequencePredictor
 from weather_patterns.models import ForecastTrainingDataset, PipelineArtifacts
 
@@ -15,12 +18,20 @@ def train_sequence_predictor(
     config: PipelineConfig,
 ) -> tuple[TorchSequencePredictor, ForecastTrainingDataset]:
     training_dataset = build_forecast_training_dataset(artifacts.forecast_samples)
+    predictor = train_sequence_predictor_from_dataset(training_dataset, config)
+    return predictor, training_dataset
+
+
+def train_sequence_predictor_from_dataset(
+    training_dataset: ForecastTrainingDataset,
+    config: PipelineConfig,
+) -> TorchSequencePredictor:
     predictor = TorchSequencePredictor(
         model_config=config.model,
         compute_config=config.compute,
     )
     predictor.fit(training_dataset)
-    return predictor, training_dataset
+    return predictor
 
 
 def train_and_save_sequence_predictor(
@@ -29,6 +40,17 @@ def train_and_save_sequence_predictor(
     checkpoint_path: str | Path,
 ) -> tuple[TorchSequencePredictor, ForecastTrainingDataset, Path]:
     predictor, training_dataset = train_sequence_predictor(artifacts, config)
+    saved_path = predictor.save_checkpoint(checkpoint_path)
+    return predictor, training_dataset, saved_path
+
+
+def train_and_save_sequence_predictor_from_dataset(
+    dataset_path: str | Path,
+    config: PipelineConfig,
+    checkpoint_path: str | Path,
+) -> tuple[TorchSequencePredictor, ForecastTrainingDataset, Path]:
+    training_dataset = load_forecast_training_dataset_jsonl(str(dataset_path))
+    predictor = train_sequence_predictor_from_dataset(training_dataset, config)
     saved_path = predictor.save_checkpoint(checkpoint_path)
     return predictor, training_dataset, saved_path
 

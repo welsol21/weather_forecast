@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from weather_patterns.io.artifacts import read_forecast_sequence_dataset_jsonl
 from weather_patterns.models import ForecastSample, ForecastTrainingDataset
 
 
@@ -65,3 +66,34 @@ def build_forecast_training_dataset(samples: list[ForecastSample]) -> ForecastTr
         history_window_count=history_window_count,
         feature_dim=feature_dim,
     )
+
+
+def _decode_optional_pattern_ids(pattern_ids: list[object]) -> list[int | None]:
+    decoded: list[int | None] = []
+    for value in pattern_ids:
+        if value is None:
+            decoded.append(None)
+        else:
+            decoded.append(int(value))
+    return decoded
+
+
+def load_forecast_training_dataset_jsonl(path: str) -> ForecastTrainingDataset:
+    records = read_forecast_sequence_dataset_jsonl(path)
+    samples: list[ForecastSample] = []
+    for record in records:
+        samples.append(
+            ForecastSample(
+                source_window_id=int(record["source_window_id"]),
+                history_window_ids=[int(value) for value in record["history_window_ids"]],
+                history_pattern_matrix=np.asarray(record["history_pattern_matrix"], dtype=np.float32),
+                history_vector=np.asarray(record["history_vector"], dtype=np.float32),
+                forecast_horizon_steps=int(record["forecast_horizon_steps"]),
+                forecast_window_count=int(record["forecast_window_count"]),
+                target_window_ids=[int(value) for value in record["target_window_ids"]],
+                target_pattern_matrix=np.asarray(record["target_pattern_matrix"], dtype=np.float32),
+                history_pattern_ids=_decode_optional_pattern_ids(record["history_pattern_ids"]),
+                target_pattern_ids=_decode_optional_pattern_ids(record["target_pattern_ids"]),
+            )
+        )
+    return build_forecast_training_dataset(samples)

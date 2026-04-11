@@ -14,6 +14,11 @@ from weather_patterns.discovery.structural import StructuralPatternDiscovery
 from weather_patterns.events.extrema import detect_extrema
 from weather_patterns.events.peaks import detect_peaks
 from weather_patterns.forecasting.samples import build_forecast_samples
+from weather_patterns.io.artifacts import (
+    write_forecast_sequence_dataset_jsonl,
+    write_pattern_flow_jsonl,
+    write_pattern_prototypes_jsonl,
+)
 from weather_patterns.models import PipelineArtifacts
 from weather_patterns.pattern.representation import build_pattern_window, compute_channel_thresholds
 from weather_patterns.pattern.representation import build_signal_channel_arrays, slice_signal_channel_arrays
@@ -221,6 +226,52 @@ def _forecast_samples_frame(artifacts: PipelineArtifacts) -> pd.DataFrame:
     )
 
 
+def _pattern_prototypes_records(artifacts: PipelineArtifacts) -> list[dict[str, object]]:
+    return [
+        {
+            "pattern_id": prototype.pattern_id,
+            "centroid": prototype.centroid.astype(float).tolist(),
+            "member_window_ids": [int(window_id) for window_id in prototype.member_window_ids],
+            "member_count": len(prototype.member_window_ids),
+            "metadata": prototype.metadata,
+        }
+        for prototype in artifacts.discovery_result.prototypes
+    ]
+
+
+def _pattern_flow_records(artifacts: PipelineArtifacts) -> list[dict[str, object]]:
+    return [
+        {
+            "window_id": window.window_id,
+            "start_time": window.start_time.isoformat(),
+            "end_time": window.end_time.isoformat(),
+            "start_index": window.extrema_window.start_index,
+            "end_index": window.extrema_window.end_index,
+            "pattern_id": artifacts.discovery_result.labels_by_window_id.get(window.window_id),
+        }
+        for window in artifacts.pattern_windows
+    ]
+
+
+def _forecast_sequence_dataset_records(artifacts: PipelineArtifacts) -> list[dict[str, object]]:
+    return [
+        {
+            "source_window_id": sample.source_window_id,
+            "history_window_ids": [int(value) for value in sample.history_window_ids],
+            "target_window_ids": [int(value) for value in sample.target_window_ids],
+            "history_pattern_ids": sample.history_pattern_ids,
+            "target_pattern_ids": sample.target_pattern_ids,
+            "forecast_horizon_steps": sample.forecast_horizon_steps,
+            "forecast_window_count": sample.forecast_window_count,
+            "history_window_count": len(sample.history_window_ids),
+            "history_vector": sample.history_vector.astype(float).tolist(),
+            "history_pattern_matrix": sample.history_pattern_matrix.astype(float).tolist(),
+            "target_pattern_matrix": sample.target_pattern_matrix.astype(float).tolist(),
+        }
+        for sample in artifacts.forecast_samples
+    ]
+
+
 def write_pipeline_artifacts(artifacts: PipelineArtifacts, output_dir: str | Path) -> dict[str, str]:
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -231,12 +282,21 @@ def write_pipeline_artifacts(artifacts: PipelineArtifacts, output_dir: str | Pat
     peak_events_path = destination / "peak_events.csv"
     pattern_windows_path = destination / "pattern_windows.csv"
     forecast_samples_path = destination / "forecast_samples.csv"
+    pattern_prototypes_path = destination / "pattern_prototypes.jsonl"
+    pattern_flow_path = destination / "pattern_flow.jsonl"
+    forecast_sequence_dataset_path = destination / "forecast_sequence_dataset.jsonl"
 
     _write_frame(artifacts.signal_frame, signal_path)
     _write_frame(_extrema_events_frame(artifacts), extrema_events_path)
     _write_frame(_peak_events_frame(artifacts), peak_events_path)
     _write_frame(_pattern_windows_frame(artifacts), pattern_windows_path)
     _write_frame(_forecast_samples_frame(artifacts), forecast_samples_path)
+    write_pattern_prototypes_jsonl(_pattern_prototypes_records(artifacts), pattern_prototypes_path)
+    write_pattern_flow_jsonl(_pattern_flow_records(artifacts), pattern_flow_path)
+    write_forecast_sequence_dataset_jsonl(
+        _forecast_sequence_dataset_records(artifacts),
+        forecast_sequence_dataset_path,
+    )
 
     return {
         "summary_path": str(summary_path),
@@ -245,4 +305,7 @@ def write_pipeline_artifacts(artifacts: PipelineArtifacts, output_dir: str | Pat
         "peak_events_path": str(peak_events_path),
         "pattern_windows_path": str(pattern_windows_path),
         "forecast_samples_path": str(forecast_samples_path),
+        "pattern_prototypes_path": str(pattern_prototypes_path),
+        "pattern_flow_path": str(pattern_flow_path),
+        "forecast_sequence_dataset_path": str(forecast_sequence_dataset_path),
     }

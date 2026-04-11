@@ -22,6 +22,7 @@ from weather_patterns.forecasting.runtime import GpuRuntimeRequirementError
 from weather_patterns.forecasting.training import (
     summarize_training_dataset,
     train_and_save_sequence_predictor,
+    train_and_save_sequence_predictor_from_dataset,
     train_sequence_predictor,
     write_training_summary,
 )
@@ -72,12 +73,38 @@ def build_parser() -> argparse.ArgumentParser:
     run_pipeline_parser.add_argument("--output-dir", default="artifacts", help="Directory for generated artifacts")
     run_pipeline_parser.add_argument("--max-rows", type=int, default=None, help="Optional row limit for quick runs")
 
+    plot_patterns_parser = subparsers.add_parser(
+        "plot-patterns",
+        help="Render diagnostic plots from saved pattern artifacts.",
+    )
+    plot_patterns_parser.add_argument(
+        "--artifacts-dir",
+        required=True,
+        help="Directory containing pattern_flow.jsonl and pattern_prototypes.jsonl",
+    )
+    plot_patterns_parser.add_argument(
+        "--csv",
+        required=False,
+        default=None,
+        help="Optional source weather CSV for overlay plots",
+    )
+    plot_patterns_parser.add_argument(
+        "--output-dir",
+        default="artifacts/plots",
+        help="Directory where the generated plots will be saved",
+    )
+
     train_sequence_parser = subparsers.add_parser(
         "train-sequence-model",
         help="Run the pipeline and train the GPU-only sequence predictor.",
     )
-    train_sequence_parser.add_argument("--csv", required=True, help="Path to hly4935_subset.csv")
+    train_sequence_parser.add_argument("--csv", required=False, help="Path to hly4935_subset.csv")
     train_sequence_parser.add_argument("--max-rows", type=int, default=None, help="Optional row limit for quick runs")
+    train_sequence_parser.add_argument(
+        "--sequence-dataset-path",
+        default=None,
+        help="Optional path to forecast_sequence_dataset.jsonl for training without rerunning the pipeline",
+    )
     train_sequence_parser.add_argument(
         "--checkpoint-path",
         default="artifacts/sequence_predictor.pt",
@@ -142,16 +169,39 @@ def main() -> None:
             print(json.dumps(output_payload, indent=2))
             return
 
+        if args.command == "plot-patterns":
+            from weather_patterns.visualization.patterns import render_pattern_diagnostics
+
+            payload = render_pattern_diagnostics(
+                artifacts_dir=args.artifacts_dir,
+                output_dir=args.output_dir,
+                csv_path=args.csv,
+            )
+            print(json.dumps(payload, indent=2))
+            return
+
         if args.command == "train-sequence-model":
             config = _build_config(args)
-            artifacts = run_pipeline(args.csv, config)
-            _, training_dataset, checkpoint_path = train_and_save_sequence_predictor(
-                artifacts,
-                config,
-                args.checkpoint_path,
-            )
+            if args.sequence_dataset_path:
+                _, training_dataset, checkpoint_path = train_and_save_sequence_predictor_from_dataset(
+                    args.sequence_dataset_path,
+                    config,
+                    args.checkpoint_path,
+                )
+            else:
+                if not args.csv:
+                    print("Either --csv or --sequence-dataset-path is required.", file=sys.stderr)
+                    raise SystemExit(2)
+                artifacts = run_pipeline(args.csv, config)
+                _, training_dataset, checkpoint_path = train_and_save_sequence_predictor(
+                    artifacts,
+                    config,
+                    args.checkpoint_path,
+                )
             payload = summarize_training_dataset(training_dataset)
             payload["checkpoint_path"] = str(checkpoint_path)
+            if args.sequence_dataset_path:
+                payload["sequence_dataset_path"] = args.sequence_dataset_path
             if args.output_path:
                 payload["output_path"] = str(write_training_summary(payload, args.output_path))
             print(json.dumps(payload, indent=2))

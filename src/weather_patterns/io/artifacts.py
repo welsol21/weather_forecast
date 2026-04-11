@@ -34,6 +34,14 @@ def write_pattern_prototypes_jsonl(records: list[dict[str, object]], path: str |
     return write_jsonl(records, path)
 
 
+def write_prepared_pattern_windows_jsonl(records: list[dict[str, object]], path: str | Path) -> Path:
+    return write_jsonl(records, path)
+
+
+def read_prepared_pattern_windows_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    return read_jsonl(path)
+
+
 def read_pattern_prototypes_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return read_jsonl(path)
 
@@ -52,4 +60,3 @@ def write_forecast_sequence_dataset_jsonl(records: list[dict[str, object]], path
 
 def read_forecast_sequence_dataset_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return read_jsonl(path)
-

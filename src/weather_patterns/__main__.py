@@ -27,7 +27,16 @@ from weather_patterns.forecasting.training import (
     write_training_summary,
 )
 from weather_patterns.forecasting.torch_sequence import TorchSequencePredictor
-from weather_patterns.pipeline import run_pipeline, write_pipeline_artifacts
+from weather_patterns.pipeline import (
+    discover_patterns,
+    load_prepared_pattern_windows,
+    load_saved_pipeline_artifacts,
+    prepare_pattern_windows,
+    run_pipeline,
+    write_discovery_artifacts,
+    write_pipeline_artifacts,
+    write_prepared_artifacts,
+)
 
 
 def _add_shared_model_runtime_args(parser: argparse.ArgumentParser) -> None:
@@ -49,7 +58,7 @@ def _add_shared_model_runtime_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _build_config(args: argparse.Namespace) -> PipelineConfig:
-    config = PipelineConfig(max_rows=args.max_rows)
+    config = PipelineConfig(max_rows=getattr(args, "max_rows", None))
     model_device = getattr(args, "model_device", None)
     allow_cpu_model = bool(getattr(args, "allow_cpu_model", False))
     if model_device is None and not allow_cpu_model:
@@ -68,10 +77,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pattern-first weather forecasting MVP.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_pipeline_parser = subparsers.add_parser("run-pipeline", help="Run the end-to-end pipeline.")
+    run_pipeline_parser = subparsers.add_parser(
+        "run-pipeline",
+        help="Run the legacy end-to-end pipeline in a single command.",
+    )
     run_pipeline_parser.add_argument("--csv", required=True, help="Path to hly4935_subset.csv")
     run_pipeline_parser.add_argument("--output-dir", default="artifacts", help="Directory for generated artifacts")
     run_pipeline_parser.add_argument("--max-rows", type=int, default=None, help="Optional row limit for quick runs")
+
+    prepare_parser = subparsers.add_parser(
+        "prepare-pattern-windows",
+        help="Run CPU-only preprocessing and save prepared pattern windows.",
+    )
+    prepare_parser.add_argument("--csv", required=True, help="Path to hly4935_subset.csv")
+    prepare_parser.add_argument("--output-dir", default="artifacts", help="Directory for generated artifacts")
+    prepare_parser.add_argument("--max-rows", type=int, default=None, help="Optional row limit for quick runs")
+
+    discover_parser = subparsers.add_parser(
+        "discover-patterns",
+        help="Run GPU-only pattern discovery from prepared pattern windows.",
+    )
+    discover_parser.add_argument(
+        "--prepared-pattern-windows-path",
+        required=True,
+        help="Path to prepared_pattern_windows.jsonl produced by prepare-pattern-windows",
+    )
+    discover_parser.add_argument("--output-dir", default="artifacts", help="Directory for generated artifacts")
+    _add_shared_model_runtime_args(discover_parser)
 
     plot_patterns_parser = subparsers.add_parser(
         "plot-patterns",
@@ -96,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_sequence_parser = subparsers.add_parser(
         "train-sequence-model",
-        help="Run the pipeline and train the GPU-only sequence predictor.",
+        help="Train the GPU-only sequence predictor, preferably from a saved sequence dataset.",
     )
     train_sequence_parser.add_argument("--csv", required=False, help="Path to hly4935_subset.csv")
     train_sequence_parser.add_argument("--max-rows", type=int, default=None, help="Optional row limit for quick runs")
@@ -124,6 +156,16 @@ def build_parser() -> argparse.ArgumentParser:
     predict_sequence_parser.add_argument("--csv", required=True, help="Path to hly4935_subset.csv")
     predict_sequence_parser.add_argument("--max-rows", type=int, default=None, help="Optional row limit for quick runs")
     predict_sequence_parser.add_argument(
+        "--prepared-pattern-windows-path",
+        default=None,
+        help="Optional path to prepared_pattern_windows.jsonl for prediction without rerunning discovery",
+    )
+    predict_sequence_parser.add_argument(
+        "--pattern-prototypes-path",
+        default=None,
+        help="Optional path to pattern_prototypes.jsonl for prediction without rerunning discovery",
+    )
+    predict_sequence_parser.add_argument(
         "--checkpoint-path",
         default=None,
         help="Optional checkpoint to load instead of retraining inline",
@@ -141,6 +183,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate_sequence_parser.add_argument("--csv", required=True, help="Path to hly4935_subset.csv")
     evaluate_sequence_parser.add_argument("--max-rows", type=int, default=None, help="Optional row limit for quick runs")
+    evaluate_sequence_parser.add_argument(
+        "--prepared-pattern-windows-path",
+        default=None,
+        help="Optional path to prepared_pattern_windows.jsonl for evaluation without rerunning discovery",
+    )
+    evaluate_sequence_parser.add_argument(
+        "--pattern-prototypes-path",
+        default=None,
+        help="Optional path to pattern_prototypes.jsonl for evaluation without rerunning discovery",
+    )
+    evaluate_sequence_parser.add_argument(
+        "--sequence-dataset-path",
+        default=None,
+        help="Optional path to forecast_sequence_dataset.jsonl for evaluation without rerunning discovery",
+    )
     evaluate_sequence_parser.add_argument(
         "--output-path",
         default="artifacts/sequence_evaluation.json",
@@ -166,6 +223,24 @@ def main() -> None:
             artifacts = run_pipeline(args.csv, config)
             output_payload = artifacts.summary()
             output_payload["artifacts"] = write_pipeline_artifacts(artifacts, args.output_dir)
+            print(json.dumps(output_payload, indent=2))
+            return
+
+        if args.command == "prepare-pattern-windows":
+            config = _build_config(args)
+            artifacts = prepare_pattern_windows(args.csv, config)
+            output_payload = artifacts.summary()
+            output_payload["artifacts"] = write_prepared_artifacts(artifacts, args.output_dir)
+            print(json.dumps(output_payload, indent=2))
+            return
+
+        if args.command == "discover-patterns":
+            config = _build_config(args)
+            pattern_windows = load_prepared_pattern_windows(args.prepared_pattern_windows_path)
+            artifacts = discover_patterns(pattern_windows, config)
+            output_payload = artifacts.summary()
+            output_payload["prepared_pattern_windows_path"] = args.prepared_pattern_windows_path
+            output_payload["artifacts"] = write_discovery_artifacts(artifacts, args.output_dir)
             print(json.dumps(output_payload, indent=2))
             return
 
@@ -209,7 +284,21 @@ def main() -> None:
 
         if args.command == "predict-sequence":
             config = _build_config(args)
-            artifacts = run_pipeline(args.csv, config)
+            if bool(args.prepared_pattern_windows_path) != bool(args.pattern_prototypes_path):
+                print(
+                    "predict-sequence requires both --prepared-pattern-windows-path and --pattern-prototypes-path.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            if args.prepared_pattern_windows_path and args.pattern_prototypes_path:
+                artifacts = load_saved_pipeline_artifacts(
+                    csv_path=args.csv,
+                    prepared_pattern_windows_path=args.prepared_pattern_windows_path,
+                    pattern_prototypes_path=args.pattern_prototypes_path,
+                    config=config,
+                )
+            else:
+                artifacts = run_pipeline(args.csv, config)
             if args.checkpoint_path:
                 checkpoint_path = Path(args.checkpoint_path)
                 if not checkpoint_path.exists():
@@ -240,7 +329,31 @@ def main() -> None:
 
         if args.command == "evaluate-sequence-model":
             config = _build_config(args)
-            artifacts = run_pipeline(args.csv, config)
+            evaluation_saved_args = [
+                args.prepared_pattern_windows_path,
+                args.pattern_prototypes_path,
+                args.sequence_dataset_path,
+            ]
+            if any(evaluation_saved_args) and not all(evaluation_saved_args):
+                print(
+                    "evaluate-sequence-model requires --prepared-pattern-windows-path, --pattern-prototypes-path, and --sequence-dataset-path together.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            if (
+                args.prepared_pattern_windows_path
+                and args.pattern_prototypes_path
+                and args.sequence_dataset_path
+            ):
+                artifacts = load_saved_pipeline_artifacts(
+                    csv_path=args.csv,
+                    prepared_pattern_windows_path=args.prepared_pattern_windows_path,
+                    pattern_prototypes_path=args.pattern_prototypes_path,
+                    sequence_dataset_path=args.sequence_dataset_path,
+                    config=config,
+                )
+            else:
+                artifacts = run_pipeline(args.csv, config)
             payload = evaluate_sequence_backtest(
                 artifacts,
                 config,

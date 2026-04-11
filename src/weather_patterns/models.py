@@ -217,6 +217,50 @@ class ForecastTrainingDataset:
 
 
 @dataclass(slots=True)
+class PreparedPatternWindowsArtifacts:
+    dataset: LoadedWeatherDataset
+    signal_frame: pd.DataFrame
+    extrema_events: list[ExtremaEvent]
+    peak_events: list[PeakEvent]
+    extrema_windows: list[ExtremaWindow]
+    pattern_windows: list[PatternWindow]
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "rows": int(len(self.dataset.dataframe)),
+            "channels": self.dataset.channel_columns,
+            "extrema_events": len(self.extrema_events),
+            "peak_events": len(self.peak_events),
+            "extrema_windows": len(self.extrema_windows),
+            "pattern_windows": len(self.pattern_windows),
+        }
+
+
+@dataclass(slots=True)
+class DiscoveryArtifacts:
+    pattern_windows: list[PatternWindow]
+    discovery_result: DiscoveryResult
+    forecast_samples: list[ForecastSample]
+
+    def summary(self) -> dict[str, Any]:
+        target_window_counts = [sample.forecast_window_count for sample in self.forecast_samples]
+        return {
+            "pattern_windows": len(self.pattern_windows),
+            "forecast_samples": len(self.forecast_samples),
+            "forecast_target_window_count": max(target_window_counts) if target_window_counts else 0,
+            "discovered_patterns": len(self.discovery_result.prototypes),
+            "discovery_strategy": self.discovery_result.strategy,
+            "selected_cluster_count": int(self.discovery_result.selected_cluster_count),
+            "selected_cluster_quality": float(self.discovery_result.selected_quality_score),
+            "discovery_selection_metric": self.discovery_result.selection_metric_name,
+            "discovery_candidate_quality": {
+                str(key): float(value)
+                for key, value in sorted(self.discovery_result.candidate_quality.items())
+            },
+        }
+
+
+@dataclass(slots=True)
 class PipelineArtifacts:
     dataset: LoadedWeatherDataset
     signal_frame: pd.DataFrame

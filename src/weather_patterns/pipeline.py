@@ -13,20 +13,38 @@ from weather_patterns.discovery.kmeans import NumpyKMeansDiscovery
 from weather_patterns.discovery.structural import StructuralPatternDiscovery
 from weather_patterns.events.extrema import detect_extrema
 from weather_patterns.events.peaks import detect_peaks
+from weather_patterns.forecasting.dataset import load_forecast_samples_jsonl
 from weather_patterns.forecasting.samples import build_forecast_samples
 from weather_patterns.io.artifacts import (
+    read_prepared_pattern_windows_jsonl,
+    read_pattern_prototypes_jsonl,
     write_forecast_sequence_dataset_jsonl,
+    write_prepared_pattern_windows_jsonl,
     write_pattern_flow_jsonl,
     write_pattern_prototypes_jsonl,
 )
-from weather_patterns.models import PipelineArtifacts
+from weather_patterns.models import (
+    DiscoveryArtifacts,
+    DiscoveryResult,
+    ExtremaEvent,
+    ExtremaWindow,
+    PatternWindow,
+    PeakEvent,
+    PipelineArtifacts,
+    PatternPrototype,
+    PreparedPatternWindowsArtifacts,
+    TimePlaceholders,
+)
 from weather_patterns.pattern.representation import build_pattern_window, compute_channel_thresholds
 from weather_patterns.pattern.representation import build_signal_channel_arrays, slice_signal_channel_arrays
 from weather_patterns.pattern.windows import build_extrema_windows
 from weather_patterns.signal.processing import build_signal_frame
 
 
-def run_pipeline(csv_path: str | Path, config: PipelineConfig | None = None) -> PipelineArtifacts:
+def prepare_pattern_windows(
+    csv_path: str | Path,
+    config: PipelineConfig | None = None,
+) -> PreparedPatternWindowsArtifacts:
     active_config = config or PipelineConfig()
     dataset = load_weather_dataset(csv_path, active_config.dataset)
     cleaned_frame = apply_quality_masks(dataset)
@@ -78,6 +96,21 @@ def run_pipeline(csv_path: str | Path, config: PipelineConfig | None = None) -> 
         )
         for extrema_window in extrema_windows
     ]
+    return PreparedPatternWindowsArtifacts(
+        dataset=dataset,
+        signal_frame=signal_frame,
+        extrema_events=extrema_events,
+        peak_events=peak_events,
+        extrema_windows=extrema_windows,
+        pattern_windows=pattern_windows,
+    )
+
+
+def discover_patterns(
+    pattern_windows: list[PatternWindow],
+    config: PipelineConfig | None = None,
+) -> DiscoveryArtifacts:
+    active_config = config or PipelineConfig()
     feature_matrix = (
         np.vstack([window.feature_vector for window in pattern_windows])
         if pattern_windows
@@ -103,15 +136,26 @@ def run_pipeline(csv_path: str | Path, config: PipelineConfig | None = None) -> 
         active_config.window,
         active_config.forecast,
     )
-    return PipelineArtifacts(
-        dataset=dataset,
-        signal_frame=signal_frame,
-        extrema_events=extrema_events,
-        peak_events=peak_events,
-        extrema_windows=extrema_windows,
+    return DiscoveryArtifacts(
         pattern_windows=pattern_windows,
         discovery_result=discovery,
         forecast_samples=forecast_samples,
+    )
+
+
+def run_pipeline(csv_path: str | Path, config: PipelineConfig | None = None) -> PipelineArtifacts:
+    prepared = prepare_pattern_windows(csv_path, config)
+    active_config = config or PipelineConfig()
+    discovery = discover_patterns(prepared.pattern_windows, active_config)
+    return PipelineArtifacts(
+        dataset=prepared.dataset,
+        signal_frame=prepared.signal_frame,
+        extrema_events=prepared.extrema_events,
+        peak_events=prepared.peak_events,
+        extrema_windows=prepared.extrema_windows,
+        pattern_windows=prepared.pattern_windows,
+        discovery_result=discovery.discovery_result,
+        forecast_samples=discovery.forecast_samples,
     )
 
 
@@ -130,7 +174,7 @@ def _write_frame(frame: pd.DataFrame, path: Path) -> None:
     frame.to_csv(path, index=False)
 
 
-def _extrema_events_frame(artifacts: PipelineArtifacts) -> pd.DataFrame:
+def _extrema_events_frame(extrema_events: list[ExtremaEvent]) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
@@ -143,12 +187,12 @@ def _extrema_events_frame(artifacts: PipelineArtifacts) -> pd.DataFrame:
                 "second_diff_value": event.second_diff_value,
                 "index": event.index,
             }
-            for event in artifacts.extrema_events
+            for event in extrema_events
         ]
     )
 
 
-def _peak_events_frame(artifacts: PipelineArtifacts) -> pd.DataFrame:
+def _peak_events_frame(peak_events: list[PeakEvent]) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
@@ -167,7 +211,7 @@ def _peak_events_frame(artifacts: PipelineArtifacts) -> pd.DataFrame:
                 "left_index": peak.left_index,
                 "right_index": peak.right_index,
             }
-            for peak in artifacts.peak_events
+            for peak in peak_events
         ]
     )
 
@@ -226,6 +270,149 @@ def _forecast_samples_frame(artifacts: PipelineArtifacts) -> pd.DataFrame:
     )
 
 
+def _prepared_pattern_window_record(window: PatternWindow) -> dict[str, object]:
+    return {
+        "window_id": window.window_id,
+        "start_time": window.start_time.isoformat(),
+        "end_time": window.end_time.isoformat(),
+        "channels": list(window.channels),
+        "intra_matrix": window.intra_matrix.astype(float).tolist(),
+        "inter_matrix": window.inter_matrix.astype(float).tolist(),
+        "peak_hazard_matrix": window.peak_hazard_matrix.astype(float).tolist(),
+        "feature_vector": window.feature_vector.astype(float).tolist(),
+        "time_placeholders": {
+            "time_step_hours": float(window.time_placeholders.time_step_hours),
+            "window_length_steps": int(window.time_placeholders.window_length_steps),
+            "forecast_horizon_steps": int(window.time_placeholders.forecast_horizon_steps),
+            "mean_inter_event_gap_steps": float(window.time_placeholders.mean_inter_event_gap_steps),
+            "var_inter_event_gap_steps": float(window.time_placeholders.var_inter_event_gap_steps),
+            "mean_peak_width_steps": float(window.time_placeholders.mean_peak_width_steps),
+            "max_peak_width_steps": float(window.time_placeholders.max_peak_width_steps),
+            "duration_over_threshold_by_channel": {
+                channel: float(value)
+                for channel, value in window.time_placeholders.duration_over_threshold_by_channel.items()
+            },
+            "normalized_event_positions": [
+                float(value) for value in window.time_placeholders.normalized_event_positions
+            ],
+        },
+        "extrema_window": {
+            "window_id": int(window.extrema_window.window_id),
+            "start_time": window.extrema_window.start_time.isoformat(),
+            "end_time": window.extrema_window.end_time.isoformat(),
+            "start_index": int(window.extrema_window.start_index),
+            "end_index": int(window.extrema_window.end_index),
+            "events": [
+                {
+                    "timestamp": event.timestamp.isoformat(),
+                    "channel": event.channel,
+                    "sign": event.sign,
+                    "amplitude": float(event.amplitude),
+                    "value": float(event.value),
+                    "first_diff_value": float(event.first_diff_value),
+                    "second_diff_value": float(event.second_diff_value),
+                    "index": int(event.index),
+                }
+                for event in window.extrema_window.events
+            ],
+            "peaks": [
+                {
+                    "timestamp": peak.timestamp.isoformat(),
+                    "channel": peak.channel,
+                    "sign": peak.sign,
+                    "peak_value": float(peak.peak_value),
+                    "prominence": float(peak.prominence),
+                    "width_steps": float(peak.width_steps),
+                    "rise_slope": float(peak.rise_slope),
+                    "fall_slope": float(peak.fall_slope),
+                    "asymmetry": float(peak.asymmetry),
+                    "left_base_value": float(peak.left_base_value),
+                    "right_base_value": float(peak.right_base_value),
+                    "index": int(peak.index),
+                    "left_index": int(peak.left_index),
+                    "right_index": int(peak.right_index),
+                }
+                for peak in window.extrema_window.peaks
+            ],
+        },
+    }
+
+
+def _parse_timestamp(value: object) -> pd.Timestamp:
+    return pd.Timestamp(str(value))
+
+
+def _prepared_pattern_window_from_record(record: dict[str, object]) -> PatternWindow:
+    extrema_payload = dict(record["extrema_window"])
+    time_payload = dict(record["time_placeholders"])
+    extrema_window = ExtremaWindow(
+        window_id=int(extrema_payload["window_id"]),
+        start_time=_parse_timestamp(extrema_payload["start_time"]),
+        end_time=_parse_timestamp(extrema_payload["end_time"]),
+        start_index=int(extrema_payload["start_index"]),
+        end_index=int(extrema_payload["end_index"]),
+        events=[
+            ExtremaEvent(
+                timestamp=_parse_timestamp(event["timestamp"]),
+                channel=str(event["channel"]),
+                sign=str(event["sign"]),
+                amplitude=float(event["amplitude"]),
+                value=float(event["value"]),
+                first_diff_value=float(event["first_diff_value"]),
+                second_diff_value=float(event["second_diff_value"]),
+                index=int(event["index"]),
+            )
+            for event in extrema_payload["events"]
+        ],
+        peaks=[
+            PeakEvent(
+                timestamp=_parse_timestamp(peak["timestamp"]),
+                channel=str(peak["channel"]),
+                sign=str(peak["sign"]),
+                peak_value=float(peak["peak_value"]),
+                prominence=float(peak["prominence"]),
+                width_steps=float(peak["width_steps"]),
+                rise_slope=float(peak["rise_slope"]),
+                fall_slope=float(peak["fall_slope"]),
+                asymmetry=float(peak["asymmetry"]),
+                left_base_value=float(peak["left_base_value"]),
+                right_base_value=float(peak["right_base_value"]),
+                index=int(peak["index"]),
+                left_index=int(peak["left_index"]),
+                right_index=int(peak["right_index"]),
+            )
+            for peak in extrema_payload["peaks"]
+        ],
+    )
+    return PatternWindow(
+        window_id=int(record["window_id"]),
+        start_time=_parse_timestamp(record["start_time"]),
+        end_time=_parse_timestamp(record["end_time"]),
+        channels=[str(channel) for channel in record["channels"]],
+        intra_matrix=np.asarray(record["intra_matrix"], dtype=float),
+        inter_matrix=np.asarray(record["inter_matrix"], dtype=float),
+        peak_hazard_matrix=np.asarray(record["peak_hazard_matrix"], dtype=float),
+        time_placeholders=TimePlaceholders(
+            time_step_hours=float(time_payload["time_step_hours"]),
+            window_length_steps=int(time_payload["window_length_steps"]),
+            forecast_horizon_steps=int(time_payload["forecast_horizon_steps"]),
+            mean_inter_event_gap_steps=float(time_payload["mean_inter_event_gap_steps"]),
+            var_inter_event_gap_steps=float(time_payload["var_inter_event_gap_steps"]),
+            mean_peak_width_steps=float(time_payload["mean_peak_width_steps"]),
+            max_peak_width_steps=float(time_payload["max_peak_width_steps"]),
+            duration_over_threshold_by_channel={
+                str(channel): float(value)
+                for channel, value in dict(time_payload["duration_over_threshold_by_channel"]).items()
+            },
+            normalized_event_positions=[
+                float(value) for value in time_payload["normalized_event_positions"]
+            ],
+        ),
+        feature_vector=np.asarray(record["feature_vector"], dtype=float),
+        extrema_window=extrema_window,
+    )
+
+
 def _pattern_prototypes_records(artifacts: PipelineArtifacts) -> list[dict[str, object]]:
     return [
         {
@@ -272,6 +459,177 @@ def _forecast_sequence_dataset_records(artifacts: PipelineArtifacts) -> list[dic
     ]
 
 
+def write_prepared_artifacts(
+    artifacts: PreparedPatternWindowsArtifacts,
+    output_dir: str | Path,
+) -> dict[str, str]:
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    summary_path = destination / "prepare_summary.json"
+    summary_path.write_text(
+        json.dumps(artifacts.summary(), indent=2),
+        encoding="utf-8",
+    )
+    signal_path = destination / "signal_frame.csv"
+    extrema_events_path = destination / "extrema_events.csv"
+    peak_events_path = destination / "peak_events.csv"
+    pattern_windows_path = destination / "prepared_pattern_windows.jsonl"
+
+    _write_frame(artifacts.signal_frame, signal_path)
+    _write_frame(_extrema_events_frame(artifacts.extrema_events), extrema_events_path)
+    _write_frame(_peak_events_frame(artifacts.peak_events), peak_events_path)
+    write_prepared_pattern_windows_jsonl(
+        [_prepared_pattern_window_record(window) for window in artifacts.pattern_windows],
+        pattern_windows_path,
+    )
+
+    return {
+        "summary_path": str(summary_path),
+        "signal_frame_path": str(signal_path),
+        "extrema_events_path": str(extrema_events_path),
+        "peak_events_path": str(peak_events_path),
+        "prepared_pattern_windows_path": str(pattern_windows_path),
+    }
+
+
+def load_prepared_pattern_windows(path: str | Path) -> list[PatternWindow]:
+    records = read_prepared_pattern_windows_jsonl(path)
+    return [_prepared_pattern_window_from_record(record) for record in records]
+
+
+def load_pattern_prototypes(path: str | Path) -> list[PatternPrototype]:
+    records = read_pattern_prototypes_jsonl(path)
+    prototypes: list[PatternPrototype] = []
+    for record in records:
+        prototypes.append(
+            PatternPrototype(
+                pattern_id=int(record["pattern_id"]),
+                centroid=np.asarray(record["centroid"], dtype=float),
+                member_window_ids=[int(window_id) for window_id in record["member_window_ids"]],
+                metadata=dict(record.get("metadata", {})),
+            )
+        )
+    return prototypes
+
+
+def load_saved_pipeline_artifacts(
+    csv_path: str | Path,
+    prepared_pattern_windows_path: str | Path,
+    pattern_prototypes_path: str | Path,
+    config: PipelineConfig | None = None,
+    sequence_dataset_path: str | Path | None = None,
+) -> PipelineArtifacts:
+    active_config = config or PipelineConfig()
+    dataset = load_weather_dataset(csv_path, active_config.dataset)
+    dataset.dataframe = apply_quality_masks(dataset)
+    if active_config.max_rows is not None:
+        dataset.dataframe = dataset.dataframe.iloc[: active_config.max_rows].copy()
+
+    pattern_windows = load_prepared_pattern_windows(prepared_pattern_windows_path)
+    prototypes = load_pattern_prototypes(pattern_prototypes_path)
+    labels_by_window_id: dict[int, int] = {}
+    for prototype in prototypes:
+        for window_id in prototype.member_window_ids:
+            labels_by_window_id[int(window_id)] = int(prototype.pattern_id)
+
+    forecast_samples = (
+        load_forecast_samples_jsonl(str(sequence_dataset_path))
+        if sequence_dataset_path is not None
+        else build_forecast_samples(
+            pattern_windows,
+            labels_by_window_id,
+            active_config.window,
+            active_config.forecast,
+        )
+    )
+
+    return PipelineArtifacts(
+        dataset=dataset,
+        signal_frame=pd.DataFrame(),
+        extrema_events=[],
+        peak_events=[],
+        extrema_windows=[window.extrema_window for window in pattern_windows],
+        pattern_windows=pattern_windows,
+        discovery_result=DiscoveryResult(
+            labels_by_window_id=labels_by_window_id,
+            prototypes=prototypes,
+            strategy="saved_artifacts",
+            selected_cluster_count=len(prototypes),
+        ),
+        forecast_samples=forecast_samples,
+    )
+
+
+def write_discovery_artifacts(
+    artifacts: DiscoveryArtifacts,
+    output_dir: str | Path,
+) -> dict[str, str]:
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    summary_path = destination / "discovery_summary.json"
+    summary_path.write_text(
+        json.dumps(artifacts.summary(), indent=2),
+        encoding="utf-8",
+    )
+    pattern_prototypes_path = destination / "pattern_prototypes.jsonl"
+    pattern_flow_path = destination / "pattern_flow.jsonl"
+    forecast_sequence_dataset_path = destination / "forecast_sequence_dataset.jsonl"
+
+    write_pattern_prototypes_jsonl(
+        [
+            {
+                "pattern_id": prototype.pattern_id,
+                "centroid": prototype.centroid.astype(float).tolist(),
+                "member_window_ids": [int(window_id) for window_id in prototype.member_window_ids],
+                "member_count": len(prototype.member_window_ids),
+                "metadata": prototype.metadata,
+            }
+            for prototype in artifacts.discovery_result.prototypes
+        ],
+        pattern_prototypes_path,
+    )
+    write_pattern_flow_jsonl(
+        [
+            {
+                "window_id": window.window_id,
+                "start_time": window.start_time.isoformat(),
+                "end_time": window.end_time.isoformat(),
+                "start_index": window.extrema_window.start_index,
+                "end_index": window.extrema_window.end_index,
+                "pattern_id": artifacts.discovery_result.labels_by_window_id.get(window.window_id),
+            }
+            for window in artifacts.pattern_windows
+        ],
+        pattern_flow_path,
+    )
+    write_forecast_sequence_dataset_jsonl(
+        [
+            {
+                "source_window_id": sample.source_window_id,
+                "history_window_ids": [int(value) for value in sample.history_window_ids],
+                "target_window_ids": [int(value) for value in sample.target_window_ids],
+                "history_pattern_ids": sample.history_pattern_ids,
+                "target_pattern_ids": sample.target_pattern_ids,
+                "forecast_horizon_steps": sample.forecast_horizon_steps,
+                "forecast_window_count": sample.forecast_window_count,
+                "history_window_count": len(sample.history_window_ids),
+                "history_vector": sample.history_vector.astype(float).tolist(),
+                "history_pattern_matrix": sample.history_pattern_matrix.astype(float).tolist(),
+                "target_pattern_matrix": sample.target_pattern_matrix.astype(float).tolist(),
+            }
+            for sample in artifacts.forecast_samples
+        ],
+        forecast_sequence_dataset_path,
+    )
+    return {
+        "summary_path": str(summary_path),
+        "pattern_prototypes_path": str(pattern_prototypes_path),
+        "pattern_flow_path": str(pattern_flow_path),
+        "forecast_sequence_dataset_path": str(forecast_sequence_dataset_path),
+    }
+
+
 def write_pipeline_artifacts(artifacts: PipelineArtifacts, output_dir: str | Path) -> dict[str, str]:
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -287,8 +645,8 @@ def write_pipeline_artifacts(artifacts: PipelineArtifacts, output_dir: str | Pat
     forecast_sequence_dataset_path = destination / "forecast_sequence_dataset.jsonl"
 
     _write_frame(artifacts.signal_frame, signal_path)
-    _write_frame(_extrema_events_frame(artifacts), extrema_events_path)
-    _write_frame(_peak_events_frame(artifacts), peak_events_path)
+    _write_frame(_extrema_events_frame(artifacts.extrema_events), extrema_events_path)
+    _write_frame(_peak_events_frame(artifacts.peak_events), peak_events_path)
     _write_frame(_pattern_windows_frame(artifacts), pattern_windows_path)
     _write_frame(_forecast_samples_frame(artifacts), forecast_samples_path)
     write_pattern_prototypes_jsonl(_pattern_prototypes_records(artifacts), pattern_prototypes_path)

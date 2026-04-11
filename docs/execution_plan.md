@@ -4,7 +4,7 @@
 
 ## Общий прогресс
 
-`27%`
+`57%`
 
 Правило обновления:
 - после каждого содержательного шага обновляется процент общего прогресса;
@@ -13,7 +13,7 @@
 
 ## 1. Архитектурная фиксация границ stage
 
-Статус: `in_progress`
+Статус: `done`
 
 Цель:
 - явно разделить data stage, discovery stage, sequence dataset stage, model stage, decoding stage и visualization stage;
@@ -24,9 +24,21 @@
 - убрать двусмысленность между preprocessing и model/discovery stage;
 - привести CLI к этим границам.
 
+Результат:
+- в постановке проекта явно зафиксировано, что discovery относится к GPU-only stage;
+- план и прогресс вынесены в отдельный трекер;
+- workflow разделён на artifact stage, sequence dataset stage, model stage и visualization stage.
+
+Уточнение после пересмотра workflow:
+- `run-pipeline` в старом виде больше не соответствует требованию, если discovery должен быть строго GPU-only;
+- workflow нужно разделить на:
+  - `prepare-pattern-windows` (CPU-only)
+  - `discover-patterns` (GPU-only)
+  - `train/evaluate/predict` (GPU-only)
+
 ## 2. Перенос discovery в GPU-only stage
 
-Статус: `pending`
+Статус: `done`
 
 Цель:
 - перестать считать `pattern discovery` CPU-only baseline для финального workflow;
@@ -37,6 +49,17 @@
 - определить backend для GPU discovery;
 - переписать структурный discovery слой под CUDA;
 - подключить runtime validation для discovery stage.
+
+Результат на текущий момент:
+- `StructuralPatternDiscovery` переведён на `torch` backend с обязательным `cuda`;
+- runtime validation для discovery stage подключена;
+- короткий discovery run на CUDA успешно проходит;
+- discovery вынесен в отдельную CLI-команду `discover-patterns`;
+- подготовка окон вынесена в отдельную CLI-команду `prepare-pattern-windows`.
+
+Осталось:
+- подтвердить стабильность полного 5+ лет прогона;
+- при необходимости доработать производительность и memory profile.
 
 ## 3. Материализация паттернов на диск
 
@@ -123,10 +146,13 @@
 - добавлены CLI summary/output улучшения;
 - добавлены JSON summary outputs для model команд.
 - `train-sequence-model` умеет принимать сохранённый `forecast_sequence_dataset.jsonl`.
+- основная CLI-документация переведена на workflow `prepare -> discover -> train`.
+- `predict-sequence` умеет работать от сохранённых `prepared_pattern_windows.jsonl` и `pattern_prototypes.jsonl`;
+- `evaluate-sequence-model` умеет работать от сохранённых `prepared_pattern_windows.jsonl`, `pattern_prototypes.jsonl` и `forecast_sequence_dataset.jsonl`.
 
 Осталось:
-- отвязать обучение от обязательного пересчёта всех артефактов при каждом запуске;
-- переключить training workflow на сохранённый pattern dataset.
+- расширить загрузку сохранённых discovery-артефактов для остальных downstream-сценариев;
+- вычистить legacy-path, чтобы он не был основным operational workflow.
 
 ## 10. Полная GPU-only оценка модели
 

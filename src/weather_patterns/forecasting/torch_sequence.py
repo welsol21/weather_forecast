@@ -247,7 +247,11 @@ class TorchSequencePredictor(SequencePredictor):
         predictor = cls(model_config=model_config, compute_config=compute_config)
         predictor._lazy_import_torch()
         torch = predictor._torch
-        checkpoint = torch.load(Path(path), map_location=predictor.device)
+        checkpoint = torch.load(
+            Path(path),
+            map_location=predictor.device,
+            weights_only=False,
+        )
         predictor._build_model(
             history_window_count=int(checkpoint["history_window_count"]),
             feature_dim=int(checkpoint["feature_dim"]),

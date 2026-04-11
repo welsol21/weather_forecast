@@ -78,7 +78,7 @@ def _decode_optional_pattern_ids(pattern_ids: list[object]) -> list[int | None]:
     return decoded
 
 
-def load_forecast_training_dataset_jsonl(path: str) -> ForecastTrainingDataset:
+def load_forecast_samples_jsonl(path: str) -> list[ForecastSample]:
     records = read_forecast_sequence_dataset_jsonl(path)
     samples: list[ForecastSample] = []
     for record in records:
@@ -96,4 +96,9 @@ def load_forecast_training_dataset_jsonl(path: str) -> ForecastTrainingDataset:
                 target_pattern_ids=_decode_optional_pattern_ids(record["target_pattern_ids"]),
             )
         )
+    return samples
+
+
+def load_forecast_training_dataset_jsonl(path: str) -> ForecastTrainingDataset:
+    samples = load_forecast_samples_jsonl(path)
     return build_forecast_training_dataset(samples)

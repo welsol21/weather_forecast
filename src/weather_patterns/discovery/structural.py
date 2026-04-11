@@ -6,6 +6,7 @@ import numpy as np
 
 from weather_patterns.config import DiscoveryConfig
 from weather_patterns.discovery.base import DiscoveryInput, PatternDiscoveryStrategy
+from weather_patterns.forecasting.runtime import resolve_model_device
 from weather_patterns.models import DiscoveryResult, PatternPrototype, PatternWindow
 from weather_patterns.pattern.representation import (
     INTER_FEATURES,
@@ -166,6 +167,14 @@ class _ClusteringState:
 class StructuralPatternDiscovery(PatternDiscoveryStrategy):
     def __init__(self, config: DiscoveryConfig) -> None:
         self.config = config
+        self.device = resolve_model_device(device="cuda", require_gpu=True, stage_name="pattern discovery")
+        self._torch = None
+
+    def _lazy_import_torch(self) -> None:
+        if self._torch is None:
+            import torch
+
+            self._torch = torch
 
     def _effective_pattern_bounds(self, row_count: int) -> tuple[int, int]:
         max_by_size = max(2, row_count // max(self.config.min_cluster_size, 1))
@@ -174,64 +183,77 @@ class StructuralPatternDiscovery(PatternDiscoveryStrategy):
         return lower, upper
 
     def _candidate_thresholds(self, matrix: np.ndarray) -> list[float]:
+        self._lazy_import_torch()
+        torch = self._torch
+        matrix_tensor = torch.as_tensor(matrix, dtype=torch.float32, device=self.device)
         sample_size = min(len(matrix), max(128, self.config.quality_sample_size))
-        rng = np.random.default_rng(self.config.random_seed)
+        generator = torch.Generator(device=self.device)
+        generator.manual_seed(self.config.random_seed)
         sample_indices = (
-            rng.choice(len(matrix), size=sample_size, replace=False)
-            if sample_size < len(matrix)
-            else np.arange(len(matrix))
+            torch.randperm(len(matrix_tensor), generator=generator, device=self.device)[:sample_size]
+            if sample_size < len(matrix_tensor)
+            else torch.arange(len(matrix_tensor), device=self.device)
         )
-        sample = matrix[sample_indices]
-        distances = np.linalg.norm(sample[:, None, :] - sample[None, :, :], axis=2)
-        np.fill_diagonal(distances, np.inf)
-        nearest = distances.min(axis=1)
+        sample = matrix_tensor[sample_indices]
+        distances = torch.cdist(sample, sample)
+        diagonal = torch.arange(len(sample), device=self.device)
+        distances[diagonal, diagonal] = float("inf")
+        nearest = distances.min(dim=1).values
         return sorted(
             {
-                float(np.quantile(nearest, quantile))
+                float(torch.quantile(nearest, quantile).item())
                 for quantile in self.config.candidate_distance_quantiles
             }
         )
 
     def _assign_online(self, matrix: np.ndarray, threshold: float) -> _ClusteringState:
+        self._lazy_import_torch()
+        torch = self._torch
+        matrix_tensor = torch.as_tensor(matrix, dtype=torch.float32, device=self.device)
         labels = np.full(len(matrix), -1, dtype=int)
-        centroids: list[np.ndarray] = []
+        centroids: list[object] = []
         counts: list[int] = []
         member_ids: list[list[int]] = []
         total_distance = 0.0
 
-        for row_index, row in enumerate(matrix):
+        for row_index in range(len(matrix_tensor)):
+            row = matrix_tensor[row_index]
             if not centroids:
-                centroids.append(row.copy())
+                centroids.append(row.clone())
                 counts.append(1)
                 member_ids.append([row_index])
                 labels[row_index] = 0
                 continue
 
-            centroid_matrix = np.vstack(centroids)
-            distances = np.linalg.norm(centroid_matrix - row[None, :], axis=1)
-            best_cluster = int(distances.argmin())
-            best_distance = float(distances[best_cluster])
+            centroid_matrix = torch.stack(centroids, dim=0)
+            distances = torch.norm(centroid_matrix - row.unsqueeze(0), dim=1)
+            best_cluster = int(torch.argmin(distances).item())
+            best_distance = float(distances[best_cluster].item())
             if best_distance <= threshold:
                 old_count = counts[best_cluster]
                 counts[best_cluster] += 1
-                centroids[best_cluster] = (centroids[best_cluster] * old_count + row) / counts[best_cluster]
+                centroids[best_cluster] = (
+                    centroids[best_cluster] * old_count + row
+                ) / counts[best_cluster]
                 member_ids[best_cluster].append(row_index)
                 labels[row_index] = best_cluster
                 total_distance += best_distance
             else:
-                centroids.append(row.copy())
+                centroids.append(row.clone())
                 counts.append(1)
                 member_ids.append([row_index])
                 labels[row_index] = len(centroids) - 1
 
         return _ClusteringState(
             labels=labels,
-            centroids=np.vstack(centroids),
+            centroids=torch.stack(centroids, dim=0).detach().cpu().numpy(),
             member_ids=member_ids,
             mean_distance=total_distance / max(len(matrix), 1),
         )
 
     def _reassign_small_clusters(self, state: _ClusteringState, matrix: np.ndarray) -> _ClusteringState:
+        self._lazy_import_torch()
+        torch = self._torch
         large_clusters = [
             cluster_id
             for cluster_id, members in enumerate(state.member_ids)
@@ -242,13 +264,14 @@ class StructuralPatternDiscovery(PatternDiscoveryStrategy):
 
         labels = state.labels.copy()
         centroids = state.centroids.copy()
+        matrix_tensor = torch.as_tensor(matrix, dtype=torch.float32, device=self.device)
         for cluster_id, members in enumerate(state.member_ids):
             if len(members) >= self.config.min_cluster_size:
                 continue
-            target_centroids = centroids[large_clusters]
+            target_centroids = torch.as_tensor(centroids[large_clusters], dtype=torch.float32, device=self.device)
             for row_index in members:
-                distances = np.linalg.norm(target_centroids - matrix[row_index][None, :], axis=1)
-                labels[row_index] = large_clusters[int(distances.argmin())]
+                distances = torch.norm(target_centroids - matrix_tensor[row_index].unsqueeze(0), dim=1)
+                labels[row_index] = large_clusters[int(torch.argmin(distances).item())]
 
         unique_labels = sorted(set(int(label) for label in labels))
         relabel = {old: new for new, old in enumerate(unique_labels)}
@@ -266,6 +289,8 @@ class StructuralPatternDiscovery(PatternDiscoveryStrategy):
         )
 
     def _merge_to_upper_bound(self, state: _ClusteringState, matrix: np.ndarray) -> _ClusteringState:
+        self._lazy_import_torch()
+        torch = self._torch
         _, upper_bound = self._effective_pattern_bounds(len(matrix))
         labels = state.labels.copy()
         member_ids = [members[:] for members in state.member_ids]
@@ -274,12 +299,13 @@ class StructuralPatternDiscovery(PatternDiscoveryStrategy):
         while len(member_ids) > upper_bound:
             cluster_sizes = np.asarray([len(members) for members in member_ids], dtype=int)
             source_cluster = int(cluster_sizes.argmin())
-            centroid_distances = np.linalg.norm(
-                centroids - centroids[source_cluster][None, :],
-                axis=1,
+            centroids_tensor = torch.as_tensor(centroids, dtype=torch.float32, device=self.device)
+            centroid_distances = torch.norm(
+                centroids_tensor - centroids_tensor[source_cluster].unsqueeze(0),
+                dim=1,
             )
-            centroid_distances[source_cluster] = np.inf
-            target_cluster = int(centroid_distances.argmin())
+            centroid_distances[source_cluster] = float("inf")
+            target_cluster = int(torch.argmin(centroid_distances).item())
             member_ids[target_cluster].extend(member_ids[source_cluster])
             del member_ids[source_cluster]
 
@@ -299,16 +325,20 @@ class StructuralPatternDiscovery(PatternDiscoveryStrategy):
         )
 
     def _quality_score(self, state: _ClusteringState) -> float:
+        self._lazy_import_torch()
+        torch = self._torch
         cluster_count = len(state.member_ids)
         if cluster_count <= 1:
             return float("-inf")
         lower_bound, upper_bound = self._effective_pattern_bounds(sum(len(members) for members in state.member_ids))
-        centroid_distances = np.linalg.norm(
-            state.centroids[:, None, :] - state.centroids[None, :, :],
-            axis=2,
+        centroids_tensor = torch.as_tensor(state.centroids, dtype=torch.float32, device=self.device)
+        centroid_distances = torch.norm(
+            centroids_tensor[:, None, :] - centroids_tensor[None, :, :],
+            dim=2,
         )
-        np.fill_diagonal(centroid_distances, np.inf)
-        mean_separation = float(np.mean(centroid_distances.min(axis=1)))
+        diagonal = torch.arange(len(centroids_tensor), device=self.device)
+        centroid_distances[diagonal, diagonal] = float("inf")
+        mean_separation = float(centroid_distances.min(dim=1).values.mean().item())
         cluster_sizes = np.asarray([len(members) for members in state.member_ids], dtype=float)
         balance = float(cluster_sizes.min() / cluster_sizes.mean()) if cluster_sizes.size else 0.0
         count_penalty = 1.0

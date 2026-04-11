@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import sys
 from pathlib import Path
@@ -8,10 +9,13 @@ from pathlib import Path
 from weather_patterns.config import PipelineConfig
 from weather_patterns.forecasting.inference import (
     predict_future_pattern_sequence,
+    summarize_forecast_result_compact,
     summarize_forecast_result,
+    write_forecast_summary,
 )
 from weather_patterns.forecasting.evaluation import (
     evaluate_sequence_backtest,
+    summarize_evaluation_payload,
     write_evaluation_summary,
 )
 from weather_patterns.forecasting.runtime import GpuRuntimeRequirementError
@@ -19,9 +23,44 @@ from weather_patterns.forecasting.training import (
     summarize_training_dataset,
     train_and_save_sequence_predictor,
     train_sequence_predictor,
+    write_training_summary,
 )
 from weather_patterns.forecasting.torch_sequence import TorchSequencePredictor
 from weather_patterns.pipeline import run_pipeline, write_pipeline_artifacts
+
+
+def _add_shared_model_runtime_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--model-device",
+        default=None,
+        help="Optional model runtime device override, for example 'cuda' or 'cpu'.",
+    )
+    parser.add_argument(
+        "--allow-cpu-model",
+        action="store_true",
+        help="Disable the GPU-only runtime requirement for model commands.",
+    )
+    parser.add_argument(
+        "--full-stdout",
+        action="store_true",
+        help="Print the full JSON payload to stdout instead of the compact summary.",
+    )
+
+
+def _build_config(args: argparse.Namespace) -> PipelineConfig:
+    config = PipelineConfig(max_rows=args.max_rows)
+    model_device = getattr(args, "model_device", None)
+    allow_cpu_model = bool(getattr(args, "allow_cpu_model", False))
+    if model_device is None and not allow_cpu_model:
+        return config
+    return replace(
+        config,
+        compute=replace(
+            config.compute,
+            model_device=model_device or config.compute.model_device,
+            require_gpu=not allow_cpu_model,
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="artifacts/sequence_predictor.pt",
         help="Where to save the trained model checkpoint",
     )
+    train_sequence_parser.add_argument(
+        "--output-path",
+        default=None,
+        help="Optional path for saving the training summary JSON",
+    )
+    _add_shared_model_runtime_args(train_sequence_parser)
 
     predict_sequence_parser = subparsers.add_parser(
         "predict-sequence",
@@ -56,6 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional checkpoint to load instead of retraining inline",
     )
+    predict_sequence_parser.add_argument(
+        "--output-path",
+        default=None,
+        help="Optional path for saving the full prediction summary JSON",
+    )
+    _add_shared_model_runtime_args(predict_sequence_parser)
 
     evaluate_sequence_parser = subparsers.add_parser(
         "evaluate-sequence-model",
@@ -74,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional cap on validation/test samples per split for faster backtests",
     )
+    _add_shared_model_runtime_args(evaluate_sequence_parser)
     return parser
 
 
@@ -83,7 +135,7 @@ def main() -> None:
 
     try:
         if args.command == "run-pipeline":
-            config = PipelineConfig(max_rows=args.max_rows)
+            config = _build_config(args)
             artifacts = run_pipeline(args.csv, config)
             output_payload = artifacts.summary()
             output_payload["artifacts"] = write_pipeline_artifacts(artifacts, args.output_dir)
@@ -91,7 +143,7 @@ def main() -> None:
             return
 
         if args.command == "train-sequence-model":
-            config = PipelineConfig(max_rows=args.max_rows)
+            config = _build_config(args)
             artifacts = run_pipeline(args.csv, config)
             _, training_dataset, checkpoint_path = train_and_save_sequence_predictor(
                 artifacts,
@@ -100,11 +152,13 @@ def main() -> None:
             )
             payload = summarize_training_dataset(training_dataset)
             payload["checkpoint_path"] = str(checkpoint_path)
+            if args.output_path:
+                payload["output_path"] = str(write_training_summary(payload, args.output_path))
             print(json.dumps(payload, indent=2))
             return
 
         if args.command == "predict-sequence":
-            config = PipelineConfig(max_rows=args.max_rows)
+            config = _build_config(args)
             artifacts = run_pipeline(args.csv, config)
             if args.checkpoint_path:
                 checkpoint_path = Path(args.checkpoint_path)
@@ -119,14 +173,23 @@ def main() -> None:
             else:
                 predictor, _ = train_sequence_predictor(artifacts, config)
             result = predict_future_pattern_sequence(predictor, artifacts, config)
-            payload = summarize_forecast_result(result)
+            full_payload = summarize_forecast_result(result)
+            if args.output_path:
+                full_payload["output_path"] = str(write_forecast_summary(full_payload, args.output_path))
+            payload = (
+                full_payload
+                if args.full_stdout
+                else summarize_forecast_result_compact(result)
+            )
+            if args.output_path:
+                payload["output_path"] = full_payload["output_path"]
             if args.checkpoint_path:
                 payload["checkpoint_path"] = args.checkpoint_path
             print(json.dumps(payload, indent=2))
             return
 
         if args.command == "evaluate-sequence-model":
-            config = PipelineConfig(max_rows=args.max_rows)
+            config = _build_config(args)
             artifacts = run_pipeline(args.csv, config)
             payload = evaluate_sequence_backtest(
                 artifacts,
@@ -134,7 +197,9 @@ def main() -> None:
                 sample_limit=args.sample_limit,
             )
             payload["output_path"] = str(write_evaluation_summary(payload, args.output_path))
-            print(json.dumps(payload, indent=2))
+            stdout_payload = payload if args.full_stdout else summarize_evaluation_payload(payload)
+            stdout_payload["output_path"] = payload["output_path"]
+            print(json.dumps(stdout_payload, indent=2))
             return
     except GpuRuntimeRequirementError as exc:
         print(f"GPU runtime error: {exc}", file=sys.stderr)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import numpy as np
+from pathlib import Path
 from typing import Any
 
 from weather_patterns.config import PipelineConfig
@@ -81,3 +83,26 @@ def summarize_forecast_result(result: ForecastResult) -> dict[str, Any]:
         "predicted_time_placeholder_count": len(result.predicted_time_placeholders),
         "predicted_peak_hazard_count": len(result.predicted_peak_hazard),
     }
+
+
+def summarize_forecast_result_compact(result: ForecastResult) -> dict[str, Any]:
+    summary = summarize_forecast_result(result)
+    return {
+        "forecast_time": summary["forecast_time"],
+        "horizon_steps": summary["horizon_steps"],
+        "predicted_window_count": summary["predicted_window_count"],
+        "predicted_pattern_ids": summary["predicted_pattern_ids"],
+        "predicted_pattern_matrix_shape": summary["predicted_pattern_matrix_shape"],
+        "predicted_timestamp_count": summary["predicted_timestamp_count"],
+        "predicted_timestamp_start": summary["predicted_timestamp_start"],
+        "predicted_timestamp_end": summary["predicted_timestamp_end"],
+        "predicted_values_channels": summary["predicted_values_channels"],
+        "predicted_values_preview": summary["predicted_values_preview"],
+    }
+
+
+def write_forecast_summary(summary: dict[str, Any], output_path: str | Path) -> Path:
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return destination

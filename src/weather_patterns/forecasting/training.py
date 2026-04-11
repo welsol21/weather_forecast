@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from pathlib import Path
 
@@ -42,3 +43,10 @@ def summarize_training_dataset(dataset: ForecastTrainingDataset) -> dict[str, An
         "history_pattern_tensor_shape": list(dataset.history_pattern_tensor.shape),
         "target_pattern_tensor_shape": list(dataset.target_pattern_tensor.shape),
     }
+
+
+def write_training_summary(summary: dict[str, Any], output_path: str | Path) -> Path:
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return destination

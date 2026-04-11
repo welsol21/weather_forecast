@@ -24,6 +24,8 @@ pip install -e .
 python -m weather_patterns run-pipeline --csv hly4935_subset.csv --output-dir artifacts
 ```
 
+If you prefer not to install the package in editable mode during local development, you can run the commands with `PYTHONPATH=src`.
+
 ## GPU-Only Model Commands
 
 These commands are intended for environments with CUDA-enabled PyTorch. The repository does not pin `torch` in the base requirements because the exact wheel depends on the target CUDA stack.
@@ -32,6 +34,14 @@ These commands are intended for environments with CUDA-enabled PyTorch. The repo
 python -m weather_patterns train-sequence-model --csv hly4935_subset.csv --max-rows 240 --checkpoint-path artifacts/sequence_predictor.pt
 python -m weather_patterns predict-sequence --csv hly4935_subset.csv --max-rows 240 --checkpoint-path artifacts/sequence_predictor.pt
 ```
+
+For local debugging without a CUDA device, the model entry points now also accept `--model-device cpu --allow-cpu-model`. This relaxes the project default and is useful only for smoke tests or development experiments.
+
+`predict-sequence` and `evaluate-sequence-model` print compact JSON summaries by default. Add `--full-stdout` when you want the full JSON payload in the terminal as well.
+
+`train-sequence-model` also accepts `--output-path` for saving the training summary JSON alongside the checkpoint metadata in stdout.
+
+`predict-sequence` also accepts `--output-path` for saving the full prediction summary JSON without forcing the full payload into stdout.
 
 ## What the pipeline does
 

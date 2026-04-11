@@ -195,6 +195,54 @@ def _collect_hourly_scoreboard(split_summary: dict[str, Any], channels: list[str
     return scoreboard
 
 
+def _summarize_split_overall(split_summary: dict[str, Any], channels: list[str]) -> dict[str, float]:
+    model_mae: list[float] = []
+    model_rmse: list[float] = []
+    baseline_mae: list[float] = []
+    baseline_rmse: list[float] = []
+    for channel in channels:
+        overall = split_summary["per_channel"][channel]["overall"]
+        baseline = split_summary["per_channel"][channel]["baseline_overall"]
+        if overall["count"] > 0:
+            model_mae.append(overall["mae"])
+            model_rmse.append(overall["rmse"])
+        if baseline["count"] > 0:
+            baseline_mae.append(baseline["mae"])
+            baseline_rmse.append(baseline["rmse"])
+    return {
+        "mean_channel_mae": float(np.mean(model_mae)) if model_mae else math.nan,
+        "mean_channel_rmse": float(np.mean(model_rmse)) if model_rmse else math.nan,
+        "baseline_mean_channel_mae": float(np.mean(baseline_mae)) if baseline_mae else math.nan,
+        "baseline_mean_channel_rmse": float(np.mean(baseline_rmse)) if baseline_rmse else math.nan,
+    }
+
+
+def summarize_evaluation_payload(summary: dict[str, Any], top_k_horizons: int = 5) -> dict[str, Any]:
+    channels = list(summary["dataset"]["channels"])
+    validation_hourly = list(summary.get("validation_hourly_scoreboard", []))
+    test_hourly = list(summary.get("test_hourly_scoreboard", []))
+    return {
+        "split": summary["split"],
+        "dataset": summary["dataset"],
+        "validation": {
+            "sample_count": summary["validation"]["sample_count"],
+            "evaluated_sample_count": summary["validation"]["evaluated_sample_count"],
+            "forecast_time_start": summary["validation"]["forecast_time_start"],
+            "forecast_time_end": summary["validation"]["forecast_time_end"],
+            "overall": _summarize_split_overall(summary["validation"], channels),
+            "hourly_scoreboard_preview": validation_hourly[:top_k_horizons],
+        },
+        "test": {
+            "sample_count": summary["test"]["sample_count"],
+            "evaluated_sample_count": summary["test"]["evaluated_sample_count"],
+            "forecast_time_start": summary["test"]["forecast_time_start"],
+            "forecast_time_end": summary["test"]["forecast_time_end"],
+            "overall": _summarize_split_overall(summary["test"], channels),
+            "hourly_scoreboard_preview": test_hourly[:top_k_horizons],
+        },
+    }
+
+
 def evaluate_sequence_backtest(
     artifacts: PipelineArtifacts,
     config: PipelineConfig,

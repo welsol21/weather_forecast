@@ -16,6 +16,7 @@ from weather_patterns.events.peaks import detect_peaks
 from weather_patterns.forecasting.dataset import load_forecast_samples_jsonl
 from weather_patterns.forecasting.samples import build_forecast_samples
 from weather_patterns.io.artifacts import (
+    iter_jsonl,
     read_prepared_pattern_windows_jsonl,
     read_pattern_prototypes_jsonl,
     write_forecast_sequence_dataset_jsonl,
@@ -37,7 +38,7 @@ from weather_patterns.models import (
 )
 from weather_patterns.pattern.representation import build_pattern_window, compute_channel_thresholds
 from weather_patterns.pattern.representation import build_signal_channel_arrays, slice_signal_channel_arrays
-from weather_patterns.pattern.windows import build_extrema_windows
+from weather_patterns.pattern.windows import build_extrema_windows, build_predictor_windows
 from weather_patterns.signal.processing import build_signal_frame
 
 
@@ -48,6 +49,11 @@ def prepare_pattern_windows(
     active_config = config or PipelineConfig()
     dataset = load_weather_dataset(csv_path, active_config.dataset)
     cleaned_frame = apply_quality_masks(dataset)
+    if active_config.date_start is not None:
+        cleaned_frame = cleaned_frame[cleaned_frame[active_config.dataset.datetime_column] >= pd.Timestamp(active_config.date_start)]
+    if active_config.date_end is not None:
+        cleaned_frame = cleaned_frame[cleaned_frame[active_config.dataset.datetime_column] <= pd.Timestamp(active_config.date_end)]
+    cleaned_frame = cleaned_frame.reset_index(drop=True)
     if active_config.max_rows is not None:
         cleaned_frame = cleaned_frame.iloc[: active_config.max_rows].copy()
         dataset.dataframe = cleaned_frame
@@ -61,12 +67,21 @@ def prepare_pattern_windows(
     )
     extrema_events = detect_extrema(signal_frame, dataset.channel_columns)
     peak_events = detect_peaks(signal_frame, dataset.channel_columns)
-    extrema_windows = build_extrema_windows(
-        signal_frame,
-        extrema_events,
-        peak_events,
-        active_config.window,
-    )
+    if active_config.window.segmentation_strategy == "predictor":
+        extrema_windows = build_predictor_windows(
+            signal_frame,
+            dataset.channel_columns,
+            extrema_events,
+            peak_events,
+            active_config.window,
+        )
+    else:
+        extrema_windows = build_extrema_windows(
+            signal_frame,
+            extrema_events,
+            peak_events,
+            active_config.window,
+        )
     upper_thresholds, lower_thresholds = compute_channel_thresholds(
         dataset.dataframe,
         dataset.channel_columns,
@@ -459,6 +474,59 @@ def _forecast_sequence_dataset_records(artifacts: PipelineArtifacts) -> list[dic
     ]
 
 
+def _prepared_pattern_window_records(
+    windows: list[PatternWindow],
+):
+    for window in windows:
+        yield _prepared_pattern_window_record(window)
+
+
+def _discovery_pattern_prototype_records(
+    artifacts: DiscoveryArtifacts,
+):
+    for prototype in artifacts.discovery_result.prototypes:
+        yield {
+            "pattern_id": prototype.pattern_id,
+            "centroid": prototype.centroid.astype(float).tolist(),
+            "member_window_ids": [int(window_id) for window_id in prototype.member_window_ids],
+            "member_count": len(prototype.member_window_ids),
+            "metadata": prototype.metadata,
+        }
+
+
+def _discovery_pattern_flow_records(
+    artifacts: DiscoveryArtifacts,
+):
+    for window in artifacts.pattern_windows:
+        yield {
+            "window_id": window.window_id,
+            "start_time": window.start_time.isoformat(),
+            "end_time": window.end_time.isoformat(),
+            "start_index": window.extrema_window.start_index,
+            "end_index": window.extrema_window.end_index,
+            "pattern_id": artifacts.discovery_result.labels_by_window_id.get(window.window_id),
+        }
+
+
+def _discovery_forecast_sequence_dataset_records(
+    artifacts: DiscoveryArtifacts,
+):
+    for sample in artifacts.forecast_samples:
+        yield {
+            "source_window_id": sample.source_window_id,
+            "history_window_ids": [int(value) for value in sample.history_window_ids],
+            "target_window_ids": [int(value) for value in sample.target_window_ids],
+            "history_pattern_ids": sample.history_pattern_ids,
+            "target_pattern_ids": sample.target_pattern_ids,
+            "forecast_horizon_steps": sample.forecast_horizon_steps,
+            "forecast_window_count": sample.forecast_window_count,
+            "history_window_count": len(sample.history_window_ids),
+            "history_vector": sample.history_vector.astype(float).tolist(),
+            "history_pattern_matrix": sample.history_pattern_matrix.astype(float).tolist(),
+            "target_pattern_matrix": sample.target_pattern_matrix.astype(float).tolist(),
+        }
+
+
 def write_prepared_artifacts(
     artifacts: PreparedPatternWindowsArtifacts,
     output_dir: str | Path,
@@ -474,13 +542,13 @@ def write_prepared_artifacts(
     signal_path = destination / "signal_frame.csv"
     extrema_events_path = destination / "extrema_events.csv"
     peak_events_path = destination / "peak_events.csv"
-    pattern_windows_path = destination / "prepared_pattern_windows.jsonl"
+    pattern_windows_path = destination / "prepared_pattern_windows.jsonl.gz"
 
     _write_frame(artifacts.signal_frame, signal_path)
     _write_frame(_extrema_events_frame(artifacts.extrema_events), extrema_events_path)
     _write_frame(_peak_events_frame(artifacts.peak_events), peak_events_path)
     write_prepared_pattern_windows_jsonl(
-        [_prepared_pattern_window_record(window) for window in artifacts.pattern_windows],
+        _prepared_pattern_window_records(artifacts.pattern_windows),
         pattern_windows_path,
     )
 
@@ -496,6 +564,13 @@ def write_prepared_artifacts(
 def load_prepared_pattern_windows(path: str | Path) -> list[PatternWindow]:
     records = read_prepared_pattern_windows_jsonl(path)
     return [_prepared_pattern_window_from_record(record) for record in records]
+
+
+def load_pattern_window_end_times(path: str | Path) -> dict[int, pd.Timestamp]:
+    return {
+        int(record["window_id"]): _parse_timestamp(record["end_time"])
+        for record in iter_jsonl(path)
+    }
 
 
 def load_pattern_prototypes(path: str | Path) -> list[PatternPrototype]:
@@ -519,30 +594,45 @@ def load_saved_pipeline_artifacts(
     pattern_prototypes_path: str | Path,
     config: PipelineConfig | None = None,
     sequence_dataset_path: str | Path | None = None,
+    load_pattern_windows: bool = True,
+    load_forecast_samples: bool = True,
 ) -> PipelineArtifacts:
     active_config = config or PipelineConfig()
     dataset = load_weather_dataset(csv_path, active_config.dataset)
-    dataset.dataframe = apply_quality_masks(dataset)
+    cleaned_frame = apply_quality_masks(dataset)
+    if active_config.date_start is not None:
+        cleaned_frame = cleaned_frame[cleaned_frame[active_config.dataset.datetime_column] >= pd.Timestamp(active_config.date_start)]
+    if active_config.date_end is not None:
+        cleaned_frame = cleaned_frame[cleaned_frame[active_config.dataset.datetime_column] <= pd.Timestamp(active_config.date_end)]
+    cleaned_frame = cleaned_frame.reset_index(drop=True)
+    dataset.dataframe = cleaned_frame
     if active_config.max_rows is not None:
         dataset.dataframe = dataset.dataframe.iloc[: active_config.max_rows].copy()
 
-    pattern_windows = load_prepared_pattern_windows(prepared_pattern_windows_path)
+    pattern_windows = (
+        load_prepared_pattern_windows(prepared_pattern_windows_path)
+        if load_pattern_windows
+        else []
+    )
     prototypes = load_pattern_prototypes(pattern_prototypes_path)
     labels_by_window_id: dict[int, int] = {}
     for prototype in prototypes:
         for window_id in prototype.member_window_ids:
             labels_by_window_id[int(window_id)] = int(prototype.pattern_id)
 
-    forecast_samples = (
-        load_forecast_samples_jsonl(str(sequence_dataset_path))
-        if sequence_dataset_path is not None
-        else build_forecast_samples(
-            pattern_windows,
-            labels_by_window_id,
-            active_config.window,
-            active_config.forecast,
+    if load_forecast_samples:
+        forecast_samples = (
+            load_forecast_samples_jsonl(str(sequence_dataset_path))
+            if sequence_dataset_path is not None
+            else build_forecast_samples(
+                pattern_windows,
+                labels_by_window_id,
+                active_config.window,
+                active_config.forecast,
+            )
         )
-    )
+    else:
+        forecast_samples = []
 
     return PipelineArtifacts(
         dataset=dataset,
@@ -574,52 +664,18 @@ def write_discovery_artifacts(
     )
     pattern_prototypes_path = destination / "pattern_prototypes.jsonl"
     pattern_flow_path = destination / "pattern_flow.jsonl"
-    forecast_sequence_dataset_path = destination / "forecast_sequence_dataset.jsonl"
+    forecast_sequence_dataset_path = destination / "forecast_sequence_dataset.jsonl.gz"
 
     write_pattern_prototypes_jsonl(
-        [
-            {
-                "pattern_id": prototype.pattern_id,
-                "centroid": prototype.centroid.astype(float).tolist(),
-                "member_window_ids": [int(window_id) for window_id in prototype.member_window_ids],
-                "member_count": len(prototype.member_window_ids),
-                "metadata": prototype.metadata,
-            }
-            for prototype in artifacts.discovery_result.prototypes
-        ],
+        _discovery_pattern_prototype_records(artifacts),
         pattern_prototypes_path,
     )
     write_pattern_flow_jsonl(
-        [
-            {
-                "window_id": window.window_id,
-                "start_time": window.start_time.isoformat(),
-                "end_time": window.end_time.isoformat(),
-                "start_index": window.extrema_window.start_index,
-                "end_index": window.extrema_window.end_index,
-                "pattern_id": artifacts.discovery_result.labels_by_window_id.get(window.window_id),
-            }
-            for window in artifacts.pattern_windows
-        ],
+        _discovery_pattern_flow_records(artifacts),
         pattern_flow_path,
     )
     write_forecast_sequence_dataset_jsonl(
-        [
-            {
-                "source_window_id": sample.source_window_id,
-                "history_window_ids": [int(value) for value in sample.history_window_ids],
-                "target_window_ids": [int(value) for value in sample.target_window_ids],
-                "history_pattern_ids": sample.history_pattern_ids,
-                "target_pattern_ids": sample.target_pattern_ids,
-                "forecast_horizon_steps": sample.forecast_horizon_steps,
-                "forecast_window_count": sample.forecast_window_count,
-                "history_window_count": len(sample.history_window_ids),
-                "history_vector": sample.history_vector.astype(float).tolist(),
-                "history_pattern_matrix": sample.history_pattern_matrix.astype(float).tolist(),
-                "target_pattern_matrix": sample.target_pattern_matrix.astype(float).tolist(),
-            }
-            for sample in artifacts.forecast_samples
-        ],
+        _discovery_forecast_sequence_dataset_records(artifacts),
         forecast_sequence_dataset_path,
     )
     return {
@@ -642,7 +698,7 @@ def write_pipeline_artifacts(artifacts: PipelineArtifacts, output_dir: str | Pat
     forecast_samples_path = destination / "forecast_samples.csv"
     pattern_prototypes_path = destination / "pattern_prototypes.jsonl"
     pattern_flow_path = destination / "pattern_flow.jsonl"
-    forecast_sequence_dataset_path = destination / "forecast_sequence_dataset.jsonl"
+    forecast_sequence_dataset_path = destination / "forecast_sequence_dataset.jsonl.gz"
 
     _write_frame(artifacts.signal_frame, signal_path)
     _write_frame(_extrema_events_frame(artifacts.extrema_events), extrema_events_path)

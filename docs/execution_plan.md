@@ -4,7 +4,7 @@
 
 ## Общий прогресс
 
-`57%`
+`92%`
 
 Правило обновления:
 - после каждого содержательного шага обновляется процент общего прогресса;
@@ -61,6 +61,10 @@
 - подтвердить стабильность полного 5+ лет прогона;
 - при необходимости доработать производительность и memory profile.
 
+Наблюдение по full run:
+- `prepare-pattern-windows` на полном датасете завершился примерно за `10.5` минут;
+- downstream `forecast_sequence_dataset.jsonl` на полном датасете оказался очень тяжёлым по размеру, что требует учитывать стоимость записи/чтения и memory profile.
+
 ## 3. Материализация паттернов на диск
 
 Статус: `done`
@@ -90,6 +94,7 @@
 
 Результат:
 - добавлен экспорт `forecast_sequence_dataset.jsonl`.
+- для тяжёлых full-run bundle добавлена совместимая запись/чтение в gzip-формате `forecast_sequence_dataset.jsonl.gz`.
 
 ## 6. Слой export/import для артефактов
 
@@ -111,7 +116,7 @@
 
 ## 7. Полный прогон на всём 5+ лет датасете
 
-Статус: `pending`
+Статус: `done`
 
 Цель:
 - получить полный pattern corpus на всём `hly4935_subset.csv`;
@@ -122,6 +127,13 @@
 - прогнать full training;
 - прогнать full evaluation;
 - зафиксировать итоговые артефакты полного run.
+- исключить повторный full `prepare` при перезапуске полного workflow, если `artifacts/prepare/*` уже существуют и валидны.
+
+Результат:
+- полный 5+ лет run завершён на артефактах в `/mnt/ml/weather_forecast_artifacts`;
+- получены и сохранены `prepare`, `discovery`, `training`, `prediction` и `evaluation` артефакты;
+- historical OOM на этапе `evaluate` воспроизведён, локализован и устранён;
+- финальный full `evaluate` успешно завершён в streaming/lightweight режиме без повторного memory blow-up.
 
 ## 8. Проверка качества найденных паттернов
 
@@ -137,7 +149,7 @@
 
 ## 9. Приведение model pipeline к воспроизводимому workflow
 
-Статус: `in_progress`
+Статус: `done`
 
 Цель:
 - сделать `train`, `predict`, `evaluate` более воспроизводимыми и удобными для полного run.
@@ -149,14 +161,21 @@
 - основная CLI-документация переведена на workflow `prepare -> discover -> train`.
 - `predict-sequence` умеет работать от сохранённых `prepared_pattern_windows.jsonl` и `pattern_prototypes.jsonl`;
 - `evaluate-sequence-model` умеет работать от сохранённых `prepared_pattern_windows.jsonl`, `pattern_prototypes.jsonl` и `forecast_sequence_dataset.jsonl`.
+- `run-split-workflow` получил флаг `--reuse-prepare` для повторного использования готового `prepare` bundle без пересчёта CPU-стадии.
 
 Осталось:
 - расширить загрузку сохранённых discovery-артефактов для остальных downstream-сценариев;
+- дополнительно сократить operational cost записи/чтения полного `forecast_sequence_dataset.jsonl.gz`, либо заменить формат на более компактный бинарный;
 - вычистить legacy-path, чтобы он не был основным operational workflow.
+
+Уточнение по итогу полного прогона:
+- `evaluate-sequence-model` переведён на streaming evaluation от сохранённого dataset;
+- full evaluation использует lightweight загрузку артефактов без materialization `forecast_samples` и полного списка `PatternWindow`;
+- в workflow добавлены process boundaries для `predict` и `evaluate`, memory/timing logs и RSS guardrail.
 
 ## 10. Полная GPU-only оценка модели
 
-Статус: `pending`
+Статус: `done`
 
 Цель:
 - получить валидные метрики модели только на CUDA run.
@@ -165,6 +184,12 @@
 - запустить full train/evaluate на полном датасете;
 - собрать поканальные и агрегированные метрики;
 - сравнить с baseline.
+
+Результат:
+- full GPU-backed evaluation завершён;
+- итоговый отчёт сохранён в `artifacts/model/sequence_evaluation.json`;
+- по агрегированному среднему RMSE модель лучше baseline на validation и test, но по агрегированному среднему MAE baseline пока лучше;
+- memory profile full evaluation стабилизирован на уровне около `1.15 GB RSS` вместо прежнего OOM-сценария.
 
 ## 11. Доведение decoding до полноценного прогноза
 
@@ -198,12 +223,13 @@
 - реализованы:
   - `pattern_flow_timeline.png`
   - `pattern_prototypes_heatmap.png`
+  - `forecast_sequence_matrix.png`
   - `weather_pattern_overlay.png`
-- требуется дополнительная верификация сохранения файлов в целевом runtime без ограничений текущего sandbox.
+- сохранение файлов подтверждено в целевом runtime вне sandbox.
 
 ## 13. Единый reproducible run
 
-Статус: `pending`
+Статус: `done`
 
 Цель:
 - один сценарий должен давать полный набор артефактов:
@@ -214,6 +240,46 @@
   - evaluation report
   - prediction outputs
   - visualization outputs
+
+Результат на текущий момент:
+- добавлен staged orchestrator `run-split-workflow`;
+- короткий run подтверждён на схеме `prepare -> discover -> train -> predict -> visualization`;
+- stage outputs пишутся раздельно в `prepare/`, `discovery/`, `model/`, `plots/`.
+- добавлен `--reuse-prepare` для повторных запусков после успешного `prepare`.
+
+Осталось:
+- подтвердить полный 5+ лет прогон в этом режиме.
+
+Результат:
+- staged orchestrator доведён до полного 5+ лет прогона;
+- первый end-to-end run завершён с выпуском всех основных model-артефактов;
+- повторный запуск может переиспользовать `prepare` bundle и downstream saved artifacts без повторного полного CPU stage.
+
+## 13A. Стабилизация Хоста И Storage Hygiene
+
+Статус: `in_progress`
+
+Цель:
+- исключить повторные зависания хоста во время полного run;
+- убрать лишнюю нагрузку с системного диска и Docker storage;
+- вынести тяжёлые runtime-артефакты на ёмкий диск.
+
+Наблюдения:
+- полный `forecast_sequence_dataset.jsonl` уже достиг размера порядка `9.9 GB`;
+- `prepared_pattern_windows.jsonl` достиг размера порядка `2.6 GB`;
+- суммарный локальный каталог `artifacts/` уже достиг порядка `12 GB`;
+- в Docker есть большой объём reclaimable data, который не нужен для текущего workflow.
+
+План действий:
+- очистить неиспользуемые Docker images, stopped containers и build cache;
+- перенести `artifacts/` на `/mnt/ml`, чтобы полный run не нагружал системный диск;
+- при необходимости затем вынести `.venv` и/или Docker data-root на отдельный диск;
+- отдельно сократить размер `forecast_sequence_dataset.jsonl` или заменить формат на более компактный.
+
+Критерий завершения:
+- `artifacts/` физически размещены на `/mnt/ml` и доступны из проекта прозрачно;
+- reclaimable Docker storage очищен;
+- повторный full/staged run не упирается в локальный storage pressure как в первичный риск.
 
 ## 14. Критерий завершения
 

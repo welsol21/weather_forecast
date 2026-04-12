@@ -46,6 +46,12 @@ class WindowConfig:
     forecast_horizon_steps: int = 24
     correlation_lag_steps: int = 6
     event_match_tolerance_steps: int = 1
+    segmentation_strategy: str = "extrema"
+    predictor_history_window_steps: int = 24
+    predictor_fit_window_steps: int = 24
+    predictor_min_run_steps: int = 3
+    predictor_min_changed_channels: int = 2
+    predictor_min_window_steps: int = 6
 
 
 @dataclass(frozen=True)
@@ -110,3 +116,5 @@ class PipelineConfig:
     model: SequenceModelConfig = field(default_factory=SequenceModelConfig)
     time_step_hours: float = 1.0
     max_rows: int | None = None
+    date_start: str | None = None
+    date_end: str | None = None

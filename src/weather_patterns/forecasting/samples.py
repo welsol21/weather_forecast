@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pandas as pd
 
 from weather_patterns.config import ForecastConfig, WindowConfig
 from weather_patterns.models import ForecastSample, PatternWindow
@@ -14,6 +15,8 @@ def resolve_target_window_count(
 ) -> int:
     if forecast_config.target_window_count is not None:
         return max(1, forecast_config.target_window_count)
+    if window_config.segmentation_strategy == "predictor":
+        return max(1, math.ceil(window_config.forecast_horizon_steps / max(window_config.predictor_min_window_steps, 1)))
     return max(1, math.ceil(window_config.forecast_horizon_steps / window_config.stride_steps))
 
 
@@ -26,25 +29,38 @@ def build_forecast_samples(
     if not pattern_windows:
         return []
 
+    target_window_count = resolve_target_window_count(window_config, forecast_config)
+    samples: list[ForecastSample] = []
     windows_by_start = {
         pattern_window.extrema_window.start_index: pattern_window
         for pattern_window in pattern_windows
     }
-    target_window_count = resolve_target_window_count(window_config, forecast_config)
-    samples: list[ForecastSample] = []
     for current_position, pattern_window in enumerate(pattern_windows):
         history_start = current_position - forecast_config.history_window_count + 1
         if history_start < 0:
             continue
-        future_start = pattern_window.extrema_window.start_index + window_config.forecast_horizon_steps
-        target_windows: list[PatternWindow] = []
-        for offset in range(target_window_count):
-            target_start = future_start + offset * window_config.stride_steps
-            target_window = windows_by_start.get(target_start)
-            if target_window is None:
-                target_windows = []
-                break
-            target_windows.append(target_window)
+        if window_config.segmentation_strategy == "predictor":
+            horizon_start = pattern_window.start_time + pd.Timedelta(hours=window_config.forecast_horizon_steps)
+            first_target_position: int | None = None
+            for future_position in range(current_position + 1, len(pattern_windows)):
+                if pattern_windows[future_position].start_time >= horizon_start:
+                    first_target_position = future_position
+                    break
+            if first_target_position is None:
+                continue
+            target_windows = pattern_windows[first_target_position : first_target_position + target_window_count]
+            if len(target_windows) != target_window_count:
+                continue
+        else:
+            future_start = pattern_window.extrema_window.start_index + window_config.forecast_horizon_steps
+            target_windows = []
+            for offset in range(target_window_count):
+                target_start = future_start + offset * window_config.stride_steps
+                target_window = windows_by_start.get(target_start)
+                if target_window is None:
+                    target_windows = []
+                    break
+                target_windows.append(target_window)
         if not target_windows:
             continue
         history_windows = pattern_windows[history_start : current_position + 1]

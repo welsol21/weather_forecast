@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 venv/
 artifacts/
+artifacts
 artifacts_docker/
 *.pyc
 *.pyo

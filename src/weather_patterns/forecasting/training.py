@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from pathlib import Path
 
@@ -11,6 +12,13 @@ from weather_patterns.forecasting.dataset import (
 )
 from weather_patterns.forecasting.torch_sequence import TorchSequencePredictor
 from weather_patterns.models import ForecastTrainingDataset, PipelineArtifacts
+
+
+def _log(logger: logging.Logger | None, message: str, **context: object) -> None:
+    if logger is None:
+        return
+    details = ", ".join(f"{key}={value}" for key, value in context.items() if value is not None)
+    logger.info(f"{message}{' ' + details if details else ''}")
 
 
 def train_sequence_predictor(
@@ -25,12 +33,23 @@ def train_sequence_predictor(
 def train_sequence_predictor_from_dataset(
     training_dataset: ForecastTrainingDataset,
     config: PipelineConfig,
+    logger: logging.Logger | None = None,
 ) -> TorchSequencePredictor:
+    _log(
+        logger,
+        "training_fit_start",
+        sample_count=len(training_dataset.source_window_ids),
+        history_window_count=training_dataset.history_window_count,
+        forecast_window_count=training_dataset.forecast_window_count,
+        feature_dim=training_dataset.feature_dim,
+        device=config.compute.model_device,
+    )
     predictor = TorchSequencePredictor(
         model_config=config.model,
         compute_config=config.compute,
     )
     predictor.fit(training_dataset)
+    _log(logger, "training_fit_end")
     return predictor
 
 
@@ -48,10 +67,22 @@ def train_and_save_sequence_predictor_from_dataset(
     dataset_path: str | Path,
     config: PipelineConfig,
     checkpoint_path: str | Path,
+    logger: logging.Logger | None = None,
 ) -> tuple[TorchSequencePredictor, ForecastTrainingDataset, Path]:
+    _log(logger, "training_dataset_load_start", dataset_path=dataset_path)
     training_dataset = load_forecast_training_dataset_jsonl(str(dataset_path))
-    predictor = train_sequence_predictor_from_dataset(training_dataset, config)
+    _log(
+        logger,
+        "training_dataset_load_end",
+        sample_count=len(training_dataset.source_window_ids),
+        history_shape=training_dataset.history_pattern_tensor.shape,
+        context_shape=training_dataset.history_vector_matrix.shape,
+        target_shape=training_dataset.target_pattern_tensor.shape,
+    )
+    predictor = train_sequence_predictor_from_dataset(training_dataset, config, logger=logger)
+    _log(logger, "training_checkpoint_save_start", checkpoint_path=checkpoint_path)
     saved_path = predictor.save_checkpoint(checkpoint_path)
+    _log(logger, "training_checkpoint_save_end", checkpoint_path=saved_path)
     return predictor, training_dataset, saved_path
 
 

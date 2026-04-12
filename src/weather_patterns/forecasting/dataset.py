@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+from typing import Iterator
 
-from weather_patterns.io.artifacts import read_forecast_sequence_dataset_jsonl
+from weather_patterns.io.artifacts import iter_jsonl, read_forecast_sequence_dataset_jsonl
 from weather_patterns.models import ForecastSample, ForecastTrainingDataset
 
 
@@ -79,26 +80,101 @@ def _decode_optional_pattern_ids(pattern_ids: list[object]) -> list[int | None]:
 
 
 def load_forecast_samples_jsonl(path: str) -> list[ForecastSample]:
-    records = read_forecast_sequence_dataset_jsonl(path)
-    samples: list[ForecastSample] = []
+    return list(iter_forecast_samples_jsonl(path))
+
+
+def iter_forecast_samples_jsonl(path: str) -> Iterator[ForecastSample]:
+    records = iter_jsonl(path)
     for record in records:
-        samples.append(
-            ForecastSample(
-                source_window_id=int(record["source_window_id"]),
-                history_window_ids=[int(value) for value in record["history_window_ids"]],
-                history_pattern_matrix=np.asarray(record["history_pattern_matrix"], dtype=np.float32),
-                history_vector=np.asarray(record["history_vector"], dtype=np.float32),
-                forecast_horizon_steps=int(record["forecast_horizon_steps"]),
-                forecast_window_count=int(record["forecast_window_count"]),
-                target_window_ids=[int(value) for value in record["target_window_ids"]],
-                target_pattern_matrix=np.asarray(record["target_pattern_matrix"], dtype=np.float32),
-                history_pattern_ids=_decode_optional_pattern_ids(record["history_pattern_ids"]),
-                target_pattern_ids=_decode_optional_pattern_ids(record["target_pattern_ids"]),
-            )
+        yield ForecastSample(
+            source_window_id=int(record["source_window_id"]),
+            history_window_ids=[int(value) for value in record["history_window_ids"]],
+            history_pattern_matrix=np.asarray(record["history_pattern_matrix"], dtype=np.float32),
+            history_vector=np.asarray(record["history_vector"], dtype=np.float32),
+            forecast_horizon_steps=int(record["forecast_horizon_steps"]),
+            forecast_window_count=int(record["forecast_window_count"]),
+            target_window_ids=[int(value) for value in record["target_window_ids"]],
+            target_pattern_matrix=np.asarray(record["target_pattern_matrix"], dtype=np.float32),
+            history_pattern_ids=_decode_optional_pattern_ids(record["history_pattern_ids"]),
+            target_pattern_ids=_decode_optional_pattern_ids(record["target_pattern_ids"]),
         )
-    return samples
 
 
 def load_forecast_training_dataset_jsonl(path: str) -> ForecastTrainingDataset:
-    samples = load_forecast_samples_jsonl(path)
-    return build_forecast_training_dataset(samples)
+    record_count = 0
+    first_record: dict[str, object] | None = None
+    for record in iter_jsonl(path):
+        if first_record is None:
+            first_record = record
+        record_count += 1
+
+    if first_record is None:
+        raise ValueError("At least one forecast sample is required to build a training dataset.")
+
+    history_window_count = len(first_record["history_pattern_matrix"])
+    forecast_window_count = len(first_record["target_pattern_matrix"])
+    feature_dim = len(first_record["target_pattern_matrix"][0])
+    forecast_horizon_steps = int(first_record["forecast_horizon_steps"])
+    context_dim = len(first_record["history_vector"])
+
+    source_window_ids: list[int] = [0] * record_count
+    history_window_ids: list[list[int]] = [list() for _ in range(record_count)]
+    target_window_ids: list[list[int]] = [list() for _ in range(record_count)]
+    history_pattern_tensor = np.empty(
+        (record_count, history_window_count, feature_dim),
+        dtype=np.float32,
+    )
+    history_vector_matrix = np.empty((record_count, context_dim), dtype=np.float32)
+    target_pattern_tensor = np.empty(
+        (record_count, forecast_window_count, feature_dim),
+        dtype=np.float32,
+    )
+    history_pattern_id_matrix = np.full(
+        (record_count, history_window_count),
+        -1,
+        dtype=np.int64,
+    )
+    target_pattern_id_matrix = np.full(
+        (record_count, forecast_window_count),
+        -1,
+        dtype=np.int64,
+    )
+
+    for row_index, record in enumerate(iter_jsonl(path)):
+        record_forecast_horizon_steps = int(record["forecast_horizon_steps"])
+        if record_forecast_horizon_steps != forecast_horizon_steps:
+            raise ValueError("All forecast samples must share the same forecast horizon.")
+        if len(record["history_pattern_matrix"]) != history_window_count:
+            raise ValueError("All history pattern matrices must share the same shape.")
+        if len(record["target_pattern_matrix"]) != forecast_window_count:
+            raise ValueError("All target pattern matrices must share the same shape.")
+
+        source_window_ids[row_index] = int(record["source_window_id"])
+        history_window_ids[row_index] = [int(value) for value in record["history_window_ids"]]
+        target_window_ids[row_index] = [int(value) for value in record["target_window_ids"]]
+        history_pattern_tensor[row_index] = np.asarray(record["history_pattern_matrix"], dtype=np.float32)
+        history_vector_matrix[row_index] = np.asarray(record["history_vector"], dtype=np.float32)
+        target_pattern_tensor[row_index] = np.asarray(record["target_pattern_matrix"], dtype=np.float32)
+        history_pattern_id_matrix[row_index] = _encode_pattern_ids(
+            _decode_optional_pattern_ids(record["history_pattern_ids"]),
+            history_window_count,
+        )
+        target_pattern_id_matrix[row_index] = _encode_pattern_ids(
+            _decode_optional_pattern_ids(record["target_pattern_ids"]),
+            forecast_window_count,
+        )
+
+    return ForecastTrainingDataset(
+        source_window_ids=source_window_ids,
+        history_window_ids=history_window_ids,
+        target_window_ids=target_window_ids,
+        history_pattern_tensor=history_pattern_tensor,
+        history_vector_matrix=history_vector_matrix,
+        target_pattern_tensor=target_pattern_tensor,
+        history_pattern_id_matrix=history_pattern_id_matrix,
+        target_pattern_id_matrix=target_pattern_id_matrix,
+        forecast_horizon_steps=forecast_horizon_steps,
+        forecast_window_count=forecast_window_count,
+        history_window_count=history_window_count,
+        feature_dim=feature_dim,
+    )

@@ -22,26 +22,40 @@ python -m venv .venv
 pip install -r requirements.txt
 pip install -e .
 python -m weather_patterns prepare-pattern-windows --csv hly4935_subset.csv --output-dir artifacts/prepare
-python -m weather_patterns discover-patterns --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl --output-dir artifacts/discovery
-python -m weather_patterns train-sequence-model --sequence-dataset-path artifacts/discovery/forecast_sequence_dataset.jsonl --checkpoint-path artifacts/sequence_predictor.pt
+python -m weather_patterns discover-patterns --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl.gz --output-dir artifacts/discovery
+python -m weather_patterns train-sequence-model --sequence-dataset-path artifacts/discovery/forecast_sequence_dataset.jsonl.gz --checkpoint-path artifacts/sequence_predictor.pt
 ```
 
 If you prefer not to install the package in editable mode during local development, you can run the commands with `PYTHONPATH=src`.
 
 `run-pipeline` still exists as a legacy single-command path, but the intended workflow is now split into `prepare-pattern-windows` and `discover-patterns`.
 
-## GPU-Only Discovery And Model Commands
+When you are running in a sandbox or on a machine without CUDA, add `--allow-cpu-model`. This switches discovery to the CPU-safe `kmeans` backend and allows the sequence model to run on CPU instead of terminating early on missing CUDA support.
+
+## CUDA-Preferred Discovery And Model Commands
 
 These commands are intended for environments with CUDA-enabled PyTorch. The repository does not pin `torch` in the base requirements because the exact wheel depends on the target CUDA stack.
 
 ```bash
-python -m weather_patterns discover-patterns --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl --output-dir artifacts/discovery
-python -m weather_patterns train-sequence-model --sequence-dataset-path artifacts/discovery/forecast_sequence_dataset.jsonl --checkpoint-path artifacts/sequence_predictor.pt
-python -m weather_patterns predict-sequence --csv hly4935_subset.csv --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl --pattern-prototypes-path artifacts/discovery/pattern_prototypes.jsonl --checkpoint-path artifacts/sequence_predictor.pt
-python -m weather_patterns evaluate-sequence-model --csv hly4935_subset.csv --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl --pattern-prototypes-path artifacts/discovery/pattern_prototypes.jsonl --sequence-dataset-path artifacts/discovery/forecast_sequence_dataset.jsonl --output-path artifacts/sequence_evaluation.json
+python -m weather_patterns discover-patterns --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl.gz --output-dir artifacts/discovery
+python -m weather_patterns train-sequence-model --sequence-dataset-path artifacts/discovery/forecast_sequence_dataset.jsonl.gz --checkpoint-path artifacts/sequence_predictor.pt
+python -m weather_patterns predict-sequence --csv hly4935_subset.csv --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl.gz --pattern-prototypes-path artifacts/discovery/pattern_prototypes.jsonl --checkpoint-path artifacts/sequence_predictor.pt
+python -m weather_patterns evaluate-sequence-model --csv hly4935_subset.csv --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl.gz --pattern-prototypes-path artifacts/discovery/pattern_prototypes.jsonl --sequence-dataset-path artifacts/discovery/forecast_sequence_dataset.jsonl.gz --output-path artifacts/sequence_evaluation.json
 ```
 
-`discover-patterns`, `train-sequence-model`, `predict-sequence`, and `evaluate-sequence-model` should be treated as CUDA stages in the target workflow.
+For a single staged run that still preserves the split artifacts on disk:
+
+```bash
+python -m weather_patterns run-split-workflow --csv hly4935_subset.csv --output-dir artifacts
+```
+
+This staged run writes separate subdirectories for:
+- `prepare/`
+- `discovery/`
+- `model/`
+- `plots/`
+
+`discover-patterns`, `train-sequence-model`, `predict-sequence`, and `evaluate-sequence-model` should be treated as CUDA stages in the target workflow. For local debugging without CUDA, use `--allow-cpu-model`.
 
 `predict-sequence` and `evaluate-sequence-model` print compact JSON summaries by default. Add `--full-stdout` when you want the full JSON payload in the terminal as well.
 
@@ -69,7 +83,7 @@ python -m weather_patterns evaluate-sequence-model --csv hly4935_subset.csv --pr
 - `signal_frame.csv`
 - `extrema_events.csv`
 - `peak_events.csv`
-- `prepared_pattern_windows.jsonl`
+- `prepared_pattern_windows.jsonl.gz`
 
 ## Discovery Artifacts
 
@@ -78,7 +92,24 @@ python -m weather_patterns evaluate-sequence-model --csv hly4935_subset.csv --pr
 - `discovery_summary.json`
 - `pattern_prototypes.jsonl`
 - `pattern_flow.jsonl`
-- `forecast_sequence_dataset.jsonl`
+- `forecast_sequence_dataset.jsonl.gz`
+
+## Storage Hygiene
+
+Full runs generate large on-disk artifacts. The heavy sequence bundles are now written as gzip-compressed JSONL by default, but they are still large enough to matter operationally.
+
+- `prepared_pattern_windows.jsonl.gz` can still grow into multi-GB range
+- `forecast_sequence_dataset.jsonl.gz` can still grow into multi-GB range
+
+For operational runs, prefer placing `artifacts/` on a large secondary disk such as `/mnt/ml` and exposing it back into the repo via a symlink if needed.
+
+Also keep Docker storage under control before long runs:
+
+- remove unused images
+- remove stopped containers
+- remove obsolete build cache
+
+This is an operational requirement, not just housekeeping: large artifact writes plus stale Docker layers noticeably increase the risk of host instability during long runs.
 
 ## Runtime Note
 

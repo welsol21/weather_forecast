@@ -207,10 +207,11 @@ def _add_evaluation_guard_args(parser: argparse.ArgumentParser) -> None:
 def _add_segmentation_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--segmentation-strategy",
-        choices=("extrema", "predictor", "hierarchical"),
+        choices=("extrema", "predictor", "hierarchical", "new_physics"),
         default=None,
         help="How to segment the signal into candidate pattern windows. "
-             "'hierarchical' = predictor regime blocks (level 1) + sliding windows within each block (level 2).",
+             "'hierarchical' = predictor regime blocks (level 1) + sliding windows within each block (level 2). "
+             "'new_physics' = same hierarchical windows but features are convergence function parameters (9 × N_channels, scale-free).",
     )
     parser.add_argument(
         "--predictor-history-window-steps",

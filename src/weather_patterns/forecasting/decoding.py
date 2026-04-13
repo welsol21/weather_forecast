@@ -10,6 +10,8 @@ from weather_patterns.pattern.representation import (
     PEAK_HAZARD_FEATURES,
 )
 
+_CONVERGENCE_DIMS_PER_CHANNEL = 9
+
 
 def _split_pattern_vector(
     pattern_vector: np.ndarray,
@@ -258,6 +260,103 @@ def _interpolate_interval_time_placeholders(
             )
         )
     return interval_time_placeholders
+
+
+def decode_forecast_result_new_physics(
+    result: ForecastResult,
+    channels: list[str],
+    initial_values: dict[str, float],
+    channel_stds: dict[str, float],
+    stride_hours: float,
+) -> ForecastResult:
+    """Decode a New Physics forecast result.
+
+    Each predicted row is a 9×N_channels convergence feature vector.
+    Values are reconstructed by chaining: the end of each pattern's local
+    convergence function becomes the initial condition of the next.
+
+    Parameters
+    ----------
+    initial_values : last observed channel values (placeholders)
+    channel_stds   : per-channel std from the last observed window
+    stride_hours   : hours per pattern window step (stride_steps × time_step_hours)
+    """
+    from weather_patterns.pattern.convergence import reconstruct_channel_sequence
+
+    n_channels = len(channels)
+    predicted_timestamps: list[pd.Timestamp] = []
+    for step_index in range(result.predicted_window_count):
+        predicted_timestamps.append(
+            result.forecast_time + pd.to_timedelta((step_index + 1) * stride_hours, unit="h")
+        )
+
+    predicted_values: dict[str, list[float]] = {}
+    for channel_idx, channel in enumerate(channels):
+        initial = initial_values.get(channel, 0.0)
+        std = channel_stds.get(channel, 1.0)
+        predicted_values[channel] = reconstruct_channel_sequence(
+            predicted_feature_matrix=result.predicted_pattern_matrix,
+            channel_idx=channel_idx,
+            n_channels=n_channels,
+            initial_value=initial,
+            channel_std=std,
+            channel=channel,
+        )
+
+    # Build hourly interval timestamps (1-h resolution) by interpolation
+    horizon_steps = result.horizon_steps
+    time_step_hours = max(stride_hours / max(round(stride_hours), 1), 1e-6)
+    interval_timestamps = _build_interval_timestamps(
+        forecast_time=result.forecast_time,
+        horizon_steps=horizon_steps,
+        time_step_hours=time_step_hours,
+    )
+    predicted_interval_values = {
+        channel: _interpolate_interval_values(
+            source_timestamps=predicted_timestamps,
+            source_values=predicted_values[channel],
+            interval_timestamps=interval_timestamps,
+        )
+        for channel in channels
+    }
+
+    # Minimal time placeholders (stride-based)
+    placeholder = TimePlaceholders(
+        time_step_hours=stride_hours,
+        window_length_steps=max(int(round(stride_hours)), 1),
+        forecast_horizon_steps=horizon_steps,
+        mean_inter_event_gap_steps=0.0,
+        var_inter_event_gap_steps=0.0,
+        mean_peak_width_steps=0.0,
+        max_peak_width_steps=0.0,
+        duration_over_threshold_by_channel={ch: 0.0 for ch in channels},
+        normalized_event_positions=[],
+    )
+    predicted_time_placeholders = [placeholder] * len(predicted_timestamps)
+    predicted_peak_hazard = [{ch: {f: 0.0 for f in PEAK_HAZARD_FEATURES} for ch in channels}] * len(predicted_timestamps)
+    interval_placeholder = TimePlaceholders(
+        time_step_hours=time_step_hours,
+        window_length_steps=max(int(round(time_step_hours)), 1),
+        forecast_horizon_steps=horizon_steps,
+        mean_inter_event_gap_steps=0.0,
+        var_inter_event_gap_steps=0.0,
+        mean_peak_width_steps=0.0,
+        max_peak_width_steps=0.0,
+        duration_over_threshold_by_channel={ch: 0.0 for ch in channels},
+        normalized_event_positions=[],
+    )
+    predicted_interval_time_placeholders = [interval_placeholder] * len(interval_timestamps)
+    predicted_interval_peak_hazard = [{ch: {f: 0.0 for f in PEAK_HAZARD_FEATURES} for ch in channels}] * len(interval_timestamps)
+
+    result.predicted_values = predicted_values
+    result.predicted_timestamps = predicted_timestamps
+    result.predicted_interval_timestamps = interval_timestamps
+    result.predicted_interval_values = predicted_interval_values
+    result.predicted_time_placeholders = predicted_time_placeholders
+    result.predicted_peak_hazard = predicted_peak_hazard
+    result.predicted_interval_time_placeholders = predicted_interval_time_placeholders
+    result.predicted_interval_peak_hazard = predicted_interval_peak_hazard
+    return result
 
 
 def decode_forecast_result(

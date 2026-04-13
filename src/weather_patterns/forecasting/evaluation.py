@@ -14,9 +14,9 @@ import pandas as pd
 
 from weather_patterns.config import PipelineConfig
 from weather_patterns.forecasting.dataset import iter_forecast_samples_jsonl
-from weather_patterns.forecasting.decoding import decode_forecast_result
+from weather_patterns.forecasting.decoding import decode_forecast_result, decode_forecast_result_new_physics
 from weather_patterns.forecasting.torch_sequence import TorchSequencePredictor
-from weather_patterns.pipeline import load_pattern_window_end_times
+from weather_patterns.pipeline import load_pattern_window_end_times, load_pattern_window_new_physics_context
 from weather_patterns.models import ForecastSample, PipelineArtifacts
 
 
@@ -204,7 +204,16 @@ def _evaluate_split(
             horizon_steps=horizon_steps,
             prototypes=artifacts.discovery_result.prototypes,
         )
-        decoded = decode_forecast_result(raw_result, channels=channels)
+        if source_window.channel_stds:
+            decoded = decode_forecast_result_new_physics(
+                raw_result,
+                channels=channels,
+                initial_values=source_window.channel_end_values,
+                channel_stds=source_window.channel_stds,
+                stride_hours=config.window.stride_steps * config.time_step_hours,
+            )
+        else:
+            decoded = decode_forecast_result(raw_result, channels=channels)
         evaluated_samples += 1
         if evaluated_samples == 1 or evaluated_samples % progress_interval == 0 or evaluated_samples == len(used_samples):
             _log(
@@ -285,6 +294,7 @@ def _evaluate_split_iter(
     logger: logging.Logger | None = None,
     split_name: str = "unknown",
     progress_interval: int = 100,
+    new_physics_context: dict[int, tuple[dict[str, float], dict[str, float]]] | None = None,
 ) -> dict[str, Any]:
     horizon_steps = config.window.forecast_horizon_steps
 
@@ -329,7 +339,18 @@ def _evaluate_split_iter(
             horizon_steps=horizon_steps,
             prototypes=prototypes,
         )
-        decoded = decode_forecast_result(raw_result, channels=channels)
+        np_ctx = new_physics_context.get(sample.source_window_id) if new_physics_context else None
+        if np_ctx is not None:
+            ch_stds, ch_end_vals = np_ctx
+            decoded = decode_forecast_result_new_physics(
+                raw_result,
+                channels=channels,
+                initial_values=ch_end_vals,
+                channel_stds=ch_stds,
+                stride_hours=config.window.stride_steps * config.time_step_hours,
+            )
+        else:
+            decoded = decode_forecast_result(raw_result, channels=channels)
         evaluated_samples += 1
         if evaluated_samples == 1 or evaluated_samples % progress_interval == 0 or evaluated_samples == requested_sample_count:
             _log(
@@ -580,6 +601,10 @@ def evaluate_sequence_backtest_from_saved_dataset(
         artifacts,
         prepared_pattern_windows_path=prepared_pattern_windows_path,
     )
+    # Load new_physics context (channel_stds + channel_end_values) when available
+    new_physics_ctx: dict[int, tuple[dict[str, float], dict[str, float]]] | None = None
+    if prepared_pattern_windows_path is not None:
+        new_physics_ctx = load_pattern_window_new_physics_context(prepared_pattern_windows_path) or None
     _log(
         logger,
         "evaluation_start",
@@ -664,6 +689,7 @@ def evaluate_sequence_backtest_from_saved_dataset(
         sample_limit=sample_limit,
         logger=logger,
         split_name="validation",
+        new_physics_context=new_physics_ctx,
     )
     test_summary = _evaluate_split_iter(
         predictor=predictor,
@@ -677,6 +703,7 @@ def evaluate_sequence_backtest_from_saved_dataset(
         sample_limit=sample_limit,
         logger=logger,
         split_name="test",
+        new_physics_context=new_physics_ctx,
     )
     summary = {
         "split": {

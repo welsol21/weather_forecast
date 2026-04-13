@@ -101,6 +101,9 @@ class PatternWindow:
     feature_vector: np.ndarray
     extrema_window: ExtremaWindow
     parent_block_id: int | None = None
+    # New Physics fields: scale and initial conditions per channel (empty for legacy windows)
+    channel_stds: dict[str, float] = field(default_factory=dict)
+    channel_end_values: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

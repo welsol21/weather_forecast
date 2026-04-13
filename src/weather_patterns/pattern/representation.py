@@ -7,6 +7,8 @@ import pandas as pd
 
 from weather_patterns.config import HazardConfig, PipelineConfig
 from weather_patterns.models import ExtremaEvent, ExtremaWindow, PatternWindow, PeakEvent, TimePlaceholders
+
+_CONVERGENCE_DIMS_PER_CHANNEL = 9
 INTRA_FEATURES = [
     "current_value",
     "delta_1",
@@ -505,6 +507,60 @@ def flatten_pattern_representation(pattern_window: PatternWindow) -> np.ndarray:
     peak_hazard = pattern_window.peak_hazard_matrix.ravel(order="C")
     time_block = pattern_window.time_placeholders.to_feature_array(pattern_window.channels)
     return np.concatenate([intra, inter, peak_hazard, time_block]).astype(float)
+
+
+def is_convergence_feature_vector(feature_vector: np.ndarray, n_channels: int) -> bool:
+    """Return True if feature_vector has the New Physics convergence layout (9 × n_channels)."""
+    return feature_vector.size == _CONVERGENCE_DIMS_PER_CHANNEL * n_channels and n_channels > 0
+
+
+def build_convergence_pattern_window(
+    extrema_window: ExtremaWindow,
+    channels: list[str],
+    config: PipelineConfig,
+    raw_series: dict[str, np.ndarray],
+    smoothed_series: dict[str, np.ndarray],
+) -> PatternWindow:
+    """Build a PatternWindow using New Physics convergence feature extraction.
+
+    The feature_vector is 9 × len(channels) floats (convergence function parameters,
+    scale-free).  intra/inter/peak_hazard matrices are empty placeholders.
+    channel_stds and channel_end_values carry the scale and initial conditions needed
+    for decoding.
+    """
+    from weather_patterns.pattern.convergence import (
+        compute_convergence_feature_vector,
+        channel_stds_from_window,
+        channel_end_values_from_window,
+    )
+    feature_vector = compute_convergence_feature_vector(smoothed_series, channels, config.window)
+    stds = channel_stds_from_window(smoothed_series, channels)
+    end_values = channel_end_values_from_window(raw_series, channels)
+    time_placeholders = TimePlaceholders(
+        time_step_hours=config.time_step_hours,
+        window_length_steps=extrema_window.end_index - extrema_window.start_index + 1,
+        forecast_horizon_steps=config.window.forecast_horizon_steps,
+        mean_inter_event_gap_steps=0.0,
+        var_inter_event_gap_steps=0.0,
+        mean_peak_width_steps=0.0,
+        max_peak_width_steps=0.0,
+        duration_over_threshold_by_channel={ch: 0.0 for ch in channels},
+        normalized_event_positions=[],
+    )
+    return PatternWindow(
+        window_id=extrema_window.window_id,
+        start_time=extrema_window.start_time,
+        end_time=extrema_window.end_time,
+        channels=channels,
+        intra_matrix=np.empty((0, 0), dtype=float),
+        inter_matrix=np.empty((0, 0), dtype=float),
+        peak_hazard_matrix=np.empty((0, 0), dtype=float),
+        time_placeholders=time_placeholders,
+        feature_vector=feature_vector,
+        extrema_window=extrema_window,
+        channel_stds=stds,
+        channel_end_values=end_values,
+    )
 
 
 def build_pattern_window(

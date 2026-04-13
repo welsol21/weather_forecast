@@ -53,10 +53,11 @@ def build_forecast_samples(
             target_windows = pattern_windows[first_target_position : first_target_position + target_window_count]
             if len(target_windows) != target_window_count:
                 continue
-        elif window_config.segmentation_strategy == "hierarchical":
+        elif window_config.segmentation_strategy in ("hierarchical", "new_physics"):
             # History and targets must belong to the same predictor regime block.
             # Cross-block history vectors are semantically incorrect: the dynamics
             # that generated those windows follow a *different* local predictor.
+            # new_physics uses the same hierarchical segmentation, so the same rule applies.
             history_windows_candidate = pattern_windows[history_start : current_position + 1]
             if any(w.parent_block_id != pattern_window.parent_block_id for w in history_windows_candidate):
                 continue
@@ -86,7 +87,7 @@ def build_forecast_samples(
             continue
         history_windows = (
             history_windows_candidate
-            if window_config.segmentation_strategy == "hierarchical"
+            if window_config.segmentation_strategy in ("hierarchical", "new_physics")
             else pattern_windows[history_start : current_position + 1]
         )
         history_vectors = [window.feature_vector for window in history_windows]

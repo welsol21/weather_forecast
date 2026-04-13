@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from weather_patterns.config import PipelineConfig
-from weather_patterns.forecasting.decoding import decode_forecast_result
+from weather_patterns.forecasting.decoding import decode_forecast_result, decode_forecast_result_new_physics
 from weather_patterns.forecasting.torch_sequence import TorchSequencePredictor
 from weather_patterns.models import ForecastResult, PipelineArtifacts
+from weather_patterns.pattern.representation import is_convergence_feature_vector
 
 
 def predict_future_pattern_sequence(
@@ -42,9 +43,20 @@ def predict_future_pattern_sequence(
         horizon_steps=config.window.forecast_horizon_steps,
         prototypes=artifacts.discovery_result.prototypes,
     )
+    channels = artifacts.dataset.channel_columns
+    last_window = history_windows[-1]
+    if is_convergence_feature_vector(last_window.feature_vector, len(channels)):
+        stride_hours = config.window.stride_steps * config.time_step_hours
+        return decode_forecast_result_new_physics(
+            raw_result,
+            channels=channels,
+            initial_values=last_window.channel_end_values,
+            channel_stds=last_window.channel_stds,
+            stride_hours=stride_hours,
+        )
     return decode_forecast_result(
         raw_result,
-        channels=artifacts.dataset.channel_columns,
+        channels=channels,
     )
 
 

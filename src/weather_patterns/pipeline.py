@@ -36,8 +36,13 @@ from weather_patterns.models import (
     PreparedPatternWindowsArtifacts,
     TimePlaceholders,
 )
-from weather_patterns.pattern.representation import build_pattern_window, compute_channel_thresholds
-from weather_patterns.pattern.representation import build_signal_channel_arrays, slice_signal_channel_arrays
+from weather_patterns.pattern.representation import (
+    build_convergence_pattern_window,
+    build_pattern_window,
+    build_signal_channel_arrays,
+    compute_channel_thresholds,
+    slice_signal_channel_arrays,
+)
 from weather_patterns.pattern.windows import build_extrema_windows, build_hierarchical_windows, build_predictor_windows
 from weather_patterns.signal.processing import build_signal_frame
 
@@ -76,7 +81,7 @@ def prepare_pattern_windows(
             peak_events,
             active_config.window,
         )
-    elif active_config.window.segmentation_strategy == "hierarchical":
+    elif active_config.window.segmentation_strategy in ("hierarchical", "new_physics"):
         extrema_windows, window_to_block = build_hierarchical_windows(
             signal_frame,
             dataset.channel_columns,
@@ -91,35 +96,54 @@ def prepare_pattern_windows(
             peak_events,
             active_config.window,
         )
-    upper_thresholds, lower_thresholds = compute_channel_thresholds(
-        dataset.dataframe,
-        dataset.channel_columns,
-        active_config.hazard,
-    )
     raw_series, smoothed_series, diff1_series, diff2_series = build_signal_channel_arrays(
         signal_frame,
         dataset.channel_columns,
     )
-    pattern_windows = [
-        build_pattern_window(
-            signal_frame,
-            extrema_window,
-            dataset.channel_columns,
-            active_config,
-            upper_thresholds,
-            lower_thresholds,
-            *slice_signal_channel_arrays(
-                raw_series,
-                smoothed_series,
-                diff1_series,
-                diff2_series,
+    if active_config.window.segmentation_strategy == "new_physics":
+        pattern_windows = [
+            build_convergence_pattern_window(
+                extrema_window,
                 dataset.channel_columns,
-                extrema_window.start_index,
-                extrema_window.end_index,
-            ),
+                active_config,
+                *slice_signal_channel_arrays(
+                    raw_series,
+                    smoothed_series,
+                    diff1_series,
+                    diff2_series,
+                    dataset.channel_columns,
+                    extrema_window.start_index,
+                    extrema_window.end_index,
+                )[:2],
+            )
+            for extrema_window in extrema_windows
+        ]
+    else:
+        upper_thresholds, lower_thresholds = compute_channel_thresholds(
+            dataset.dataframe,
+            dataset.channel_columns,
+            active_config.hazard,
         )
-        for extrema_window in extrema_windows
-    ]
+        pattern_windows = [
+            build_pattern_window(
+                signal_frame,
+                extrema_window,
+                dataset.channel_columns,
+                active_config,
+                upper_thresholds,
+                lower_thresholds,
+                *slice_signal_channel_arrays(
+                    raw_series,
+                    smoothed_series,
+                    diff1_series,
+                    diff2_series,
+                    dataset.channel_columns,
+                    extrema_window.start_index,
+                    extrema_window.end_index,
+                ),
+            )
+            for extrema_window in extrema_windows
+        ]
     if window_to_block:
         for pw in pattern_windows:
             pw.parent_block_id = window_to_block.get(pw.window_id)
@@ -304,6 +328,8 @@ def _prepared_pattern_window_record(window: PatternWindow) -> dict[str, object]:
         "end_time": window.end_time.isoformat(),
         "channels": list(window.channels),
         "parent_block_id": window.parent_block_id,
+        "channel_stds": {k: float(v) for k, v in window.channel_stds.items()},
+        "channel_end_values": {k: float(v) for k, v in window.channel_end_values.items()},
         "intra_matrix": window.intra_matrix.astype(float).tolist(),
         "inter_matrix": window.inter_matrix.astype(float).tolist(),
         "peak_hazard_matrix": window.peak_hazard_matrix.astype(float).tolist(),
@@ -440,6 +466,8 @@ def _prepared_pattern_window_from_record(record: dict[str, object]) -> PatternWi
         feature_vector=np.asarray(record["feature_vector"], dtype=float),
         extrema_window=extrema_window,
         parent_block_id=int(raw_block_id) if raw_block_id is not None else None,
+        channel_stds={str(k): float(v) for k, v in dict(record.get("channel_stds", {})).items()},
+        channel_end_values={str(k): float(v) for k, v in dict(record.get("channel_end_values", {})).items()},
     )
 
 
@@ -691,6 +719,22 @@ def load_pattern_window_end_times(path: str | Path) -> dict[int, pd.Timestamp]:
         int(record["window_id"]): _parse_timestamp(record["end_time"])
         for record in iter_jsonl(path)
     }
+
+
+def load_pattern_window_new_physics_context(
+    path: str | Path,
+) -> dict[int, tuple[dict[str, float], dict[str, float]]]:
+    """Load (channel_stds, channel_end_values) per window_id for new_physics evaluation.
+
+    Returns an empty dict if the file contains no new_physics windows (legacy format).
+    """
+    result: dict[int, tuple[dict[str, float], dict[str, float]]] = {}
+    for record in iter_jsonl(path):
+        ch_stds = {str(k): float(v) for k, v in dict(record.get("channel_stds", {})).items()}
+        if ch_stds:
+            ch_end_vals = {str(k): float(v) for k, v in dict(record.get("channel_end_values", {})).items()}
+            result[int(record["window_id"])] = (ch_stds, ch_end_vals)
+    return result
 
 
 def load_pattern_prototypes(path: str | Path) -> list[PatternPrototype]:

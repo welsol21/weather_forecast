@@ -214,6 +214,69 @@ def _merge_short_ranges(ranges: list[tuple[int, int]], min_window_steps: int) ->
     return [(start, end) for start, end in merged]
 
 
+def build_hierarchical_windows(
+    signal_frame: pd.DataFrame,
+    channels: list[str],
+    extrema_events: list[ExtremaEvent],
+    peak_events: list[PeakEvent],
+    config: WindowConfig,
+    time_column: str = "date",
+) -> tuple[list[ExtremaWindow], dict[int, int]]:
+    """Two-level segmentation: predictor regime blocks → sliding windows within each block.
+
+    Level 1: build_predictor_windows finds regime boundaries (where local forecast
+    dynamics change across ≥ min_changed_channels simultaneously).
+
+    Level 2: inside each regime block, a sliding window of length_steps / stride_steps
+    generates the fine-grained pattern windows used for clustering and training.
+
+    Returns
+    -------
+    windows : list[ExtremaWindow]
+        All sliding windows that fall entirely within a predictor regime block.
+        Windows that would span a block boundary are excluded.
+    window_to_block : dict[int, int]
+        Maps ExtremaWindow.window_id → regime block ExtremaWindow.window_id,
+        so callers can stamp PatternWindow.parent_block_id.
+    """
+    regime_blocks = build_predictor_windows(
+        signal_frame,
+        channels,
+        extrema_events,
+        peak_events,
+        config,
+        time_column,
+    )
+    length = config.length_steps
+    stride = config.stride_steps
+    ranges: list[tuple[int, int]] = []
+    block_ids: list[int] = []
+
+    for block in regime_blocks:
+        block_len = block.end_index - block.start_index + 1
+        if block_len < length:
+            continue
+        max_start_offset = block_len - length + 1
+        for offset in range(0, max_start_offset, stride):
+            start_idx = block.start_index + offset
+            end_idx = start_idx + length - 1
+            ranges.append((start_idx, end_idx))
+            block_ids.append(block.window_id)
+
+    windows = _build_windows_from_ranges(
+        signal_frame,
+        ranges,
+        extrema_events,
+        peak_events,
+        time_column,
+    )
+    window_to_block: dict[int, int] = {
+        window.window_id: block_id
+        for window, block_id in zip(windows, block_ids)
+    }
+    return windows, window_to_block
+
+
 def build_predictor_windows(
     signal_frame: pd.DataFrame,
     channels: list[str],

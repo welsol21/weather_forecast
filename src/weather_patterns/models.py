@@ -100,6 +100,7 @@ class PatternWindow:
     time_placeholders: TimePlaceholders
     feature_vector: np.ndarray
     extrema_window: ExtremaWindow
+    parent_block_id: int | None = None
 
 
 @dataclass(slots=True)

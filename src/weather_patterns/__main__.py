@@ -38,9 +38,11 @@ from weather_patterns.pipeline import (
     discover_patterns,
     load_prepared_pattern_windows,
     load_saved_pipeline_artifacts,
+    prepare_hierarchical_from_existing,
     prepare_pattern_windows,
     run_pipeline,
     write_discovery_artifacts,
+    write_hierarchical_prepare_artifacts,
     write_pipeline_artifacts,
     write_prepared_artifacts,
 )
@@ -205,9 +207,10 @@ def _add_evaluation_guard_args(parser: argparse.ArgumentParser) -> None:
 def _add_segmentation_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--segmentation-strategy",
-        choices=("extrema", "predictor"),
+        choices=("extrema", "predictor", "hierarchical"),
         default=None,
-        help="How to segment the signal into candidate pattern windows.",
+        help="How to segment the signal into candidate pattern windows. "
+             "'hierarchical' = predictor regime blocks (level 1) + sliding windows within each block (level 2).",
     )
     parser.add_argument(
         "--predictor-history-window-steps",
@@ -338,6 +341,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reuse an existing prepare bundle from output-dir/prepare instead of recomputing the CPU stage.",
     )
     split_workflow_parser.add_argument(
+        "--reuse-prepare-source",
+        default=None,
+        metavar="PATH",
+        help="Path to an existing prepare/ directory (e.g. from a previous extrema run) whose "
+             "PatternWindows and signal_frame will be reused. When combined with "
+             "--segmentation-strategy hierarchical the windows are filtered to those within "
+             "predictor regime blocks and stamped with parent_block_id — skipping the expensive "
+             "PatternWindow rebuild (~54 000 objects).",
+    )
+    split_workflow_parser.add_argument(
         "--skip-evaluate",
         action="store_true",
         help="Skip the evaluation stage.",
@@ -452,6 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path for saving the full prediction summary JSON",
     )
     _add_shared_model_runtime_args(predict_sequence_parser)
+    _add_evaluation_guard_args(predict_sequence_parser)
 
     evaluate_sequence_parser = subparsers.add_parser(
         "evaluate-sequence-model",
@@ -527,6 +541,7 @@ def main() -> None:
             )
 
             reuse_prepare = bool(args.reuse_prepare) and _has_prepare_bundle(prepare_output_dir)
+            reuse_prepare_source = getattr(args, "reuse_prepare_source", None)
             prepared = None
             if reuse_prepare:
                 prepare_started = _log_stage_start(logger, "prepare", mode="reuse", output_dir=prepare_output_dir)
@@ -539,6 +554,33 @@ def main() -> None:
                     "prepare",
                     prepare_started,
                     reused=True,
+                    prepared_pattern_windows_path=prepare_artifacts["prepared_pattern_windows_path"],
+                )
+            elif reuse_prepare_source and config.window.segmentation_strategy == "hierarchical":
+                source_prepare_dir = Path(reuse_prepare_source)
+                prepare_started = _log_stage_start(
+                    logger,
+                    "prepare",
+                    mode="hierarchical_filter",
+                    source=str(source_prepare_dir),
+                    output_dir=prepare_output_dir,
+                )
+                hierarchical_windows = prepare_hierarchical_from_existing(
+                    source_prepare_dir,
+                    args.csv,
+                    config,
+                )
+                prepare_artifacts = write_hierarchical_prepare_artifacts(
+                    hierarchical_windows,
+                    source_prepare_dir,
+                    prepare_output_dir,
+                )
+                _log_stage_end(
+                    logger,
+                    "prepare",
+                    prepare_started,
+                    hierarchical_windows=len(hierarchical_windows),
+                    source=str(source_prepare_dir),
                     prepared_pattern_windows_path=prepare_artifacts["prepared_pattern_windows_path"],
                 )
             else:
@@ -643,6 +685,8 @@ def main() -> None:
                     ]
                     if args.max_rows is not None:
                         prediction_command.extend(["--max-rows", str(args.max_rows)])
+                    if args.max_rss_mb is not None:
+                        prediction_command.extend(["--max-rss-mb", str(args.max_rss_mb)])
                     prediction_command = _extend_shared_dataset_slice_args(prediction_command, args)
                     prediction_command = _extend_shared_model_runtime_args(prediction_command, args)
                     prediction_payload = _run_json_command(prediction_command, logger, "prediction")
@@ -835,6 +879,8 @@ def main() -> None:
                 )
             else:
                 predictor, _ = train_sequence_predictor(artifacts, config)
+            if args.max_rss_mb is not None:
+                predictor.set_resource_limits(max_rss_mb=args.max_rss_mb)
             result = predict_future_pattern_sequence(predictor, artifacts, config)
             full_payload = summarize_forecast_result(result)
             if args.output_path:

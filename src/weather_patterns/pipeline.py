@@ -38,7 +38,7 @@ from weather_patterns.models import (
 )
 from weather_patterns.pattern.representation import build_pattern_window, compute_channel_thresholds
 from weather_patterns.pattern.representation import build_signal_channel_arrays, slice_signal_channel_arrays
-from weather_patterns.pattern.windows import build_extrema_windows, build_predictor_windows
+from weather_patterns.pattern.windows import build_extrema_windows, build_hierarchical_windows, build_predictor_windows
 from weather_patterns.signal.processing import build_signal_frame
 
 
@@ -67,8 +67,17 @@ def prepare_pattern_windows(
     )
     extrema_events = detect_extrema(signal_frame, dataset.channel_columns)
     peak_events = detect_peaks(signal_frame, dataset.channel_columns)
+    window_to_block: dict[int, int] = {}
     if active_config.window.segmentation_strategy == "predictor":
         extrema_windows = build_predictor_windows(
+            signal_frame,
+            dataset.channel_columns,
+            extrema_events,
+            peak_events,
+            active_config.window,
+        )
+    elif active_config.window.segmentation_strategy == "hierarchical":
+        extrema_windows, window_to_block = build_hierarchical_windows(
             signal_frame,
             dataset.channel_columns,
             extrema_events,
@@ -111,6 +120,9 @@ def prepare_pattern_windows(
         )
         for extrema_window in extrema_windows
     ]
+    if window_to_block:
+        for pw in pattern_windows:
+            pw.parent_block_id = window_to_block.get(pw.window_id)
     return PreparedPatternWindowsArtifacts(
         dataset=dataset,
         signal_frame=signal_frame,
@@ -291,6 +303,7 @@ def _prepared_pattern_window_record(window: PatternWindow) -> dict[str, object]:
         "start_time": window.start_time.isoformat(),
         "end_time": window.end_time.isoformat(),
         "channels": list(window.channels),
+        "parent_block_id": window.parent_block_id,
         "intra_matrix": window.intra_matrix.astype(float).tolist(),
         "inter_matrix": window.inter_matrix.astype(float).tolist(),
         "peak_hazard_matrix": window.peak_hazard_matrix.astype(float).tolist(),
@@ -399,6 +412,7 @@ def _prepared_pattern_window_from_record(record: dict[str, object]) -> PatternWi
             for peak in extrema_payload["peaks"]
         ],
     )
+    raw_block_id = record.get("parent_block_id")
     return PatternWindow(
         window_id=int(record["window_id"]),
         start_time=_parse_timestamp(record["start_time"]),
@@ -425,6 +439,7 @@ def _prepared_pattern_window_from_record(record: dict[str, object]) -> PatternWi
         ),
         feature_vector=np.asarray(record["feature_vector"], dtype=float),
         extrema_window=extrema_window,
+        parent_block_id=int(raw_block_id) if raw_block_id is not None else None,
     )
 
 
@@ -525,6 +540,111 @@ def _discovery_forecast_sequence_dataset_records(
             "history_pattern_matrix": sample.history_pattern_matrix.astype(float).tolist(),
             "target_pattern_matrix": sample.target_pattern_matrix.astype(float).tolist(),
         }
+
+
+def filter_windows_for_hierarchical(
+    existing_pattern_windows: list[PatternWindow],
+    signal_frame: pd.DataFrame,
+    channels: list[str],
+    config: PipelineConfig,
+) -> list[PatternWindow]:
+    """Filter already-built PatternWindows to those fully within a predictor regime block.
+
+    This is the fast reuse path for the hierarchical strategy: instead of rebuilding
+    all ~54 000 PatternWindow objects from scratch, we load existing ones (from a
+    previous extrema run), run the predictor segmentation on the cached signal_frame,
+    and keep only the windows whose start_index falls inside a regime block.
+
+    Sets parent_block_id on each kept window in place.
+    """
+    regime_blocks = build_predictor_windows(
+        signal_frame,
+        channels,
+        [],
+        [],
+        config.window,
+    )
+    length = config.window.length_steps
+    stride = config.window.stride_steps
+    valid_starts: dict[int, int] = {}
+    for block in regime_blocks:
+        block_len = block.end_index - block.start_index + 1
+        if block_len < length:
+            continue
+        for offset in range(0, block_len - length + 1, stride):
+            start_idx = block.start_index + offset
+            valid_starts[start_idx] = block.window_id
+
+    result: list[PatternWindow] = []
+    for pw in existing_pattern_windows:
+        block_id = valid_starts.get(pw.extrema_window.start_index)
+        if block_id is not None:
+            pw.parent_block_id = block_id
+            result.append(pw)
+    return result
+
+
+def prepare_hierarchical_from_existing(
+    source_prepare_dir: Path | str,
+    csv_path: str | Path,
+    config: PipelineConfig,
+) -> list[PatternWindow]:
+    """Reuse prepare artifacts from a previous extrema run for the hierarchical strategy.
+
+    Loads signal_frame.csv and prepared_pattern_windows.jsonl.gz from
+    *source_prepare_dir* (e.g. an earlier extrema run), runs predictor
+    segmentation on the cached signal_frame, and returns the subset of
+    PatternWindows that fall within predictor regime blocks — with
+    parent_block_id already stamped on each.
+
+    This avoids re-building ~54 000 PatternWindow objects (~15 min of CPU work).
+    The signal_frame.csv already contains the smoothed_* columns needed by the
+    predictor; the CSV dataset is only loaded to discover the channel list.
+    """
+    source = Path(source_prepare_dir)
+    signal_frame = pd.read_csv(source / "signal_frame.csv")
+    dataset = load_weather_dataset(csv_path, config.dataset)
+    channels = dataset.channel_columns
+    existing_windows = load_prepared_pattern_windows(source / "prepared_pattern_windows.jsonl.gz")
+    return filter_windows_for_hierarchical(existing_windows, signal_frame, channels, config)
+
+
+def write_hierarchical_prepare_artifacts(
+    pattern_windows: list[PatternWindow],
+    source_prepare_dir: Path | str,
+    output_dir: Path | str,
+) -> dict[str, str]:
+    """Write prepare artifacts for the hierarchical strategy.
+
+    Copies signal_frame.csv, extrema_events.csv and peak_events.csv unchanged
+    from *source_prepare_dir* (they are identical to any other run over the same
+    CSV and date range), then serialises only the filtered hierarchical windows.
+    """
+    import shutil
+    source = Path(source_prepare_dir)
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    for filename in ("signal_frame.csv", "extrema_events.csv", "peak_events.csv"):
+        shutil.copy2(source / filename, destination / filename)
+    pattern_windows_path = destination / "prepared_pattern_windows.jsonl.gz"
+    write_prepared_pattern_windows_jsonl(
+        _prepared_pattern_window_records(pattern_windows),
+        pattern_windows_path,
+    )
+    summary = {
+        "hierarchical_windows": len(pattern_windows),
+        "source": str(source),
+        "segmentation_strategy": "hierarchical",
+    }
+    summary_path = destination / "prepare_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return {
+        "summary_path": str(summary_path),
+        "signal_frame_path": str(destination / "signal_frame.csv"),
+        "extrema_events_path": str(destination / "extrema_events.csv"),
+        "peak_events_path": str(destination / "peak_events.csv"),
+        "prepared_pattern_windows_path": str(pattern_windows_path),
+    }
 
 
 def write_prepared_artifacts(

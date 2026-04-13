@@ -17,6 +17,8 @@ def resolve_target_window_count(
         return max(1, forecast_config.target_window_count)
     if window_config.segmentation_strategy == "predictor":
         return max(1, math.ceil(window_config.forecast_horizon_steps / max(window_config.predictor_min_window_steps, 1)))
+    # "hierarchical" and "extrema" both use stride-based sliding windows of fixed length,
+    # so the number of target windows equals horizon / stride.
     return max(1, math.ceil(window_config.forecast_horizon_steps / window_config.stride_steps))
 
 
@@ -51,6 +53,25 @@ def build_forecast_samples(
             target_windows = pattern_windows[first_target_position : first_target_position + target_window_count]
             if len(target_windows) != target_window_count:
                 continue
+        elif window_config.segmentation_strategy == "hierarchical":
+            # History and targets must belong to the same predictor regime block.
+            # Cross-block history vectors are semantically incorrect: the dynamics
+            # that generated those windows follow a *different* local predictor.
+            history_windows_candidate = pattern_windows[history_start : current_position + 1]
+            if any(w.parent_block_id != pattern_window.parent_block_id for w in history_windows_candidate):
+                continue
+            future_start = pattern_window.extrema_window.start_index + window_config.forecast_horizon_steps
+            target_windows = []
+            for offset in range(target_window_count):
+                target_start = future_start + offset * window_config.stride_steps
+                target_window = windows_by_start.get(target_start)
+                if target_window is None:
+                    target_windows = []
+                    break
+                if target_window.parent_block_id != pattern_window.parent_block_id:
+                    target_windows = []
+                    break
+                target_windows.append(target_window)
         else:
             future_start = pattern_window.extrema_window.start_index + window_config.forecast_horizon_steps
             target_windows = []
@@ -63,7 +84,11 @@ def build_forecast_samples(
                 target_windows.append(target_window)
         if not target_windows:
             continue
-        history_windows = pattern_windows[history_start : current_position + 1]
+        history_windows = (
+            history_windows_candidate
+            if window_config.segmentation_strategy == "hierarchical"
+            else pattern_windows[history_start : current_position + 1]
+        )
         history_vectors = [window.feature_vector for window in history_windows]
         history_vector = np.concatenate(
             history_vectors

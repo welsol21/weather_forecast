@@ -167,12 +167,16 @@ def discover_patterns(
         if pattern_windows
         else np.empty((0, 0))
     )
-    if active_config.discovery.strategy == "structural":
+    # new_physics windows have empty intra_matrix — structural discovery is incompatible
+    effective_discovery_strategy = active_config.discovery.strategy
+    if active_config.window.segmentation_strategy == "new_physics" and effective_discovery_strategy == "structural":
+        effective_discovery_strategy = "kmeans"
+    if effective_discovery_strategy == "structural":
         discovery_strategy = StructuralPatternDiscovery(active_config.discovery)
-    elif active_config.discovery.strategy == "kmeans":
+    elif effective_discovery_strategy == "kmeans":
         discovery_strategy = NumpyKMeansDiscovery(active_config.discovery)
     else:
-        raise ValueError(f"Unsupported discovery strategy: {active_config.discovery.strategy}")
+        raise ValueError(f"Unsupported discovery strategy: {effective_discovery_strategy}")
 
     discovery = discovery_strategy.fit_predict(
         DiscoveryInput(

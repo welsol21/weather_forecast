@@ -557,30 +557,24 @@ def main() -> None:
                     reused=True,
                     prepared_pattern_windows_path=prepare_artifacts["prepared_pattern_windows_path"],
                 )
-            elif reuse_prepare_source and config.window.segmentation_strategy == "hierarchical":
+            elif reuse_prepare_source and config.window.segmentation_strategy == "new_physics":
+                # new_physics prepare is fully self-contained — reuse windows as-is
                 source_prepare_dir = Path(reuse_prepare_source)
                 prepare_started = _log_stage_start(
                     logger,
                     "prepare",
-                    mode="hierarchical_filter",
+                    mode="new_physics_reuse",
                     source=str(source_prepare_dir),
                     output_dir=prepare_output_dir,
                 )
-                hierarchical_windows = prepare_hierarchical_from_existing(
-                    source_prepare_dir,
-                    args.csv,
-                    config,
-                )
-                prepare_artifacts = write_hierarchical_prepare_artifacts(
-                    hierarchical_windows,
-                    source_prepare_dir,
-                    prepare_output_dir,
-                )
+                prepare_artifacts = {
+                    name: str(path)
+                    for name, path in _prepare_bundle_paths(source_prepare_dir).items()
+                }
                 _log_stage_end(
                     logger,
                     "prepare",
                     prepare_started,
-                    hierarchical_windows=len(hierarchical_windows),
                     source=str(source_prepare_dir),
                     prepared_pattern_windows_path=prepare_artifacts["prepared_pattern_windows_path"],
                 )

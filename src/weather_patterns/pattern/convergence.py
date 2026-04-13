@@ -125,8 +125,11 @@ def _channel_convergence_vector(
     if history_norm.size >= 3:
         pred_acc = _predict_acceleration(history_norm)
         errors.append((_prediction_error(actual_norm, _wrap_prediction(pred_acc, channel), channel), _TYPE_ACCELERATION))
-        pred_ar2 = _predict_local_ar2(history_norm, fit_window)
-        errors.append((_prediction_error(actual_norm, _wrap_prediction(pred_ar2, channel), channel), _TYPE_AR2))
+        try:
+            pred_ar2 = _predict_local_ar2(history_norm, fit_window)
+            errors.append((_prediction_error(actual_norm, _wrap_prediction(pred_ar2, channel), channel), _TYPE_AR2))
+        except np.linalg.LinAlgError:
+            pass  # SVD did not converge — skip AR2 candidate for this window
 
     best_type = min(errors, key=lambda item: item[0])[1]
 

@@ -10,6 +10,7 @@ from weather_patterns.config import PipelineConfig
 from weather_patterns.data.loading import apply_quality_masks, load_weather_dataset
 from weather_patterns.discovery.base import DiscoveryInput
 from weather_patterns.discovery.kmeans import NumpyKMeansDiscovery
+from weather_patterns.discovery.kmedoids import KMedoidsDiscovery
 from weather_patterns.discovery.structural import StructuralPatternDiscovery
 from weather_patterns.events.extrema import detect_extrema
 from weather_patterns.events.peaks import detect_peaks
@@ -43,8 +44,61 @@ from weather_patterns.pattern.representation import (
     compute_channel_thresholds,
     slice_signal_channel_arrays,
 )
+from weather_patterns.pattern.segmentation import PatternSegment, segment_time_series
 from weather_patterns.pattern.windows import build_extrema_windows, build_hierarchical_windows, build_predictor_windows
 from weather_patterns.signal.processing import build_signal_frame
+
+
+def _segments_to_pattern_windows(
+    segments: list[PatternSegment],
+    channels: list[str],
+) -> list[PatternWindow]:
+    """Convert PatternSegments (Run 8) to PatternWindow objects for downstream pipeline."""
+    from weather_patterns.models import ExtremaWindow, TimePlaceholders
+    import pandas as pd
+
+    windows = []
+    dummy_placeholders = TimePlaceholders(
+        time_step_hours=1.0,
+        window_length_steps=0,
+        forecast_horizon_steps=0,
+        mean_inter_event_gap_steps=0.0,
+        var_inter_event_gap_steps=0.0,
+        mean_peak_width_steps=0.0,
+        max_peak_width_steps=0.0,
+        duration_over_threshold_by_channel={ch: 0.0 for ch in channels},
+        normalized_event_positions=[],
+    )
+    for seg in segments:
+        extrema_window = ExtremaWindow(
+            window_id=seg.segment_id,
+            start_time=seg.start_time,
+            end_time=seg.end_time,
+            start_index=seg.start_index,
+            end_index=seg.end_index,
+            events=[],
+            peaks=[],
+        )
+        windows.append(PatternWindow(
+            window_id=seg.segment_id,
+            start_time=seg.start_time,
+            end_time=seg.end_time,
+            channels=channels,
+            intra_matrix=np.zeros((0,), dtype=float),
+            inter_matrix=np.zeros((0,), dtype=float),
+            peak_hazard_matrix=np.zeros((0,), dtype=float),
+            time_placeholders=dummy_placeholders,
+            feature_vector=seg.feature_vector,
+            extrema_window=extrema_window,
+            parent_block_id=None,
+            channel_x0=seg.channel_x0,
+            channel_stds={
+                ch: seg.channel_fits[ch].std
+                for ch in channels
+                if ch in seg.channel_fits
+            },
+        ))
+    return windows
 
 
 def prepare_pattern_windows(
@@ -82,14 +136,7 @@ def prepare_pattern_windows(
             active_config.window,
         )
     elif active_config.window.segmentation_strategy == "new_physics":
-        # Simple stride-based sliding windows over the full history — no blocks.
-        # New Physics patterns are scale-free and self-contained; regime blocks not needed.
-        extrema_windows = build_extrema_windows(
-            signal_frame,
-            extrema_events,
-            peak_events,
-            active_config.window,
-        )
+        pass  # handled separately below via segment_time_series
     elif active_config.window.segmentation_strategy == "hierarchical":
         extrema_windows, window_to_block = build_hierarchical_windows(
             signal_frame,
@@ -110,23 +157,15 @@ def prepare_pattern_windows(
         dataset.channel_columns,
     )
     if active_config.window.segmentation_strategy == "new_physics":
-        pattern_windows = [
-            build_convergence_pattern_window(
-                extrema_window,
-                dataset.channel_columns,
-                active_config,
-                *slice_signal_channel_arrays(
-                    raw_series,
-                    smoothed_series,
-                    diff1_series,
-                    diff2_series,
-                    dataset.channel_columns,
-                    extrema_window.start_index,
-                    extrema_window.end_index,
-                )[:2],
-            )
-            for extrema_window in extrema_windows
-        ]
+        segments = segment_time_series(
+            signal_frame=signal_frame,
+            channel_arrays={ch: raw_series[ch] for ch in dataset.channel_columns},
+            channels=dataset.channel_columns,
+            tolerance_sigma=active_config.window.predictor_history_window_steps / 10.0,
+            min_segment_length=active_config.window.predictor_min_window_steps,
+        )
+        extrema_windows = []
+        pattern_windows = _segments_to_pattern_windows(segments, dataset.channel_columns)
     else:
         upper_thresholds, lower_thresholds = compute_channel_thresholds(
             dataset.dataframe,
@@ -176,11 +215,14 @@ def discover_patterns(
         if pattern_windows
         else np.empty((0, 0))
     )
-    # new_physics windows have empty intra_matrix — structural discovery is incompatible
+    # new_physics windows use k-medoids with functional integral distance
     effective_discovery_strategy = active_config.discovery.strategy
-    if active_config.window.segmentation_strategy == "new_physics" and effective_discovery_strategy == "structural":
-        effective_discovery_strategy = "kmeans"
-    if effective_discovery_strategy == "structural":
+    if active_config.window.segmentation_strategy == "new_physics":
+        effective_discovery_strategy = "kmedoids"
+    if effective_discovery_strategy == "kmedoids":
+        n_channels = len(pattern_windows[0].channels) if pattern_windows else 1
+        discovery_strategy = KMedoidsDiscovery(active_config.discovery, n_channels)
+    elif effective_discovery_strategy == "structural":
         discovery_strategy = StructuralPatternDiscovery(active_config.discovery)
     elif effective_discovery_strategy == "kmeans":
         discovery_strategy = NumpyKMeansDiscovery(active_config.discovery)
@@ -342,7 +384,7 @@ def _prepared_pattern_window_record(window: PatternWindow) -> dict[str, object]:
         "channels": list(window.channels),
         "parent_block_id": window.parent_block_id,
         "channel_stds": {k: float(v) for k, v in window.channel_stds.items()},
-        "channel_end_values": {k: float(v) for k, v in window.channel_end_values.items()},
+        "channel_x0": {k: float(v) for k, v in window.channel_x0.items()},
         "intra_matrix": window.intra_matrix.astype(float).tolist(),
         "inter_matrix": window.inter_matrix.astype(float).tolist(),
         "peak_hazard_matrix": window.peak_hazard_matrix.astype(float).tolist(),
@@ -480,7 +522,7 @@ def _prepared_pattern_window_from_record(record: dict[str, object]) -> PatternWi
         extrema_window=extrema_window,
         parent_block_id=int(raw_block_id) if raw_block_id is not None else None,
         channel_stds={str(k): float(v) for k, v in dict(record.get("channel_stds", {})).items()},
-        channel_end_values={str(k): float(v) for k, v in dict(record.get("channel_end_values", {})).items()},
+        channel_x0={str(k): float(v) for k, v in dict(record.get("channel_x0", {})).items()},
     )
 
 
@@ -737,7 +779,7 @@ def load_pattern_window_end_times(path: str | Path) -> dict[int, pd.Timestamp]:
 def load_pattern_window_new_physics_context(
     path: str | Path,
 ) -> dict[int, tuple[dict[str, float], dict[str, float]]]:
-    """Load (channel_stds, channel_end_values) per window_id for new_physics evaluation.
+    """Load (channel_stds, channel_x0) per window_id for new_physics evaluation.
 
     Returns an empty dict if the file contains no new_physics windows (legacy format).
     """
@@ -745,8 +787,8 @@ def load_pattern_window_new_physics_context(
     for record in iter_jsonl(path):
         ch_stds = {str(k): float(v) for k, v in dict(record.get("channel_stds", {})).items()}
         if ch_stds:
-            ch_end_vals = {str(k): float(v) for k, v in dict(record.get("channel_end_values", {})).items()}
-            result[int(record["window_id"])] = (ch_stds, ch_end_vals)
+            ch_x0 = {str(k): float(v) for k, v in dict(record.get("channel_x0", {})).items()}
+            result[int(record["window_id"])] = (ch_stds, ch_x0)
     return result
 
 

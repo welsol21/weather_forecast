@@ -51,26 +51,32 @@ from weather_patterns.pipeline import (
 def _configure_workflow_logger(output_dir: Path) -> tuple[logging.Logger, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / "run_split_workflow.log"
-    logger = logging.getLogger("weather_patterns.run_split_workflow")
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
 
     formatter = logging.Formatter(
         fmt="%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    if logger.handlers:
-        for handler in list(logger.handlers):
-            logger.removeHandler(handler)
+    # Route all weather_patterns.* loggers to this workflow log so module-level
+    # INFO from segmentation, kmedoids, etc. is captured inline (not lost).
+    pkg_logger = logging.getLogger("weather_patterns")
+    pkg_logger.setLevel(logging.INFO)
+
+    if pkg_logger.handlers:
+        for handler in list(pkg_logger.handlers):
+            pkg_logger.removeHandler(handler)
             handler.close()
 
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(formatter)
     stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
+    pkg_logger.addHandler(file_handler)
+    pkg_logger.addHandler(stream_handler)
+
+    # Return the workflow-specific child logger (all its messages propagate up)
+    logger = logging.getLogger("weather_patterns.run_split_workflow")
+    logger.setLevel(logging.INFO)
     return logger, log_path
 
 

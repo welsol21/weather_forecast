@@ -211,7 +211,7 @@ def _add_segmentation_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="How to segment the signal into candidate pattern windows. "
              "'hierarchical' = predictor regime blocks (level 1) + sliding windows within each block (level 2). "
-             "'new_physics' = same hierarchical windows but features are convergence function parameters (9 × N_channels, scale-free).",
+             "'new_physics' = simple stride-based sliding windows over full history, features are convergence function parameters (9 × N_channels, scale-free).",
     )
     parser.add_argument(
         "--predictor-history-window-steps",
@@ -313,6 +313,23 @@ def _has_prepare_bundle(output_dir: Path) -> bool:
     return all(resolve_artifact_path(path).exists() for path in _prepare_bundle_paths(output_dir).values())
 
 
+def _discovery_bundle_paths(output_dir: Path) -> dict[str, Path]:
+    return {
+        "summary_path": output_dir / "discovery_summary.json",
+        "pattern_prototypes_path": output_dir / "pattern_prototypes.jsonl",
+        "pattern_flow_path": output_dir / "pattern_flow.jsonl",
+        "forecast_sequence_dataset_path": output_dir / "forecast_sequence_dataset.jsonl.gz",
+    }
+
+
+def _has_discovery_bundle(output_dir: Path) -> bool:
+    paths = _discovery_bundle_paths(output_dir)
+    return all(
+        resolve_artifact_path(paths[k]).exists()
+        for k in ("pattern_prototypes_path", "forecast_sequence_dataset_path")
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Pattern-first weather forecasting MVP.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -350,6 +367,16 @@ def build_parser() -> argparse.ArgumentParser:
              "--segmentation-strategy hierarchical the windows are filtered to those within "
              "predictor regime blocks and stamped with parent_block_id — skipping the expensive "
              "PatternWindow rebuild (~54 000 objects).",
+    )
+    split_workflow_parser.add_argument(
+        "--skip-discovery",
+        action="store_true",
+        help="Skip discovery if artifacts already exist in output-dir/discovery.",
+    )
+    split_workflow_parser.add_argument(
+        "--skip-training",
+        action="store_true",
+        help="Skip model training if checkpoint already exists in output-dir/model.",
     )
     split_workflow_parser.add_argument(
         "--skip-evaluate",
@@ -528,10 +555,12 @@ def main() -> None:
             model_output_dir = root_output_dir / "model"
             plots_output_dir = root_output_dir / "plots"
             logger.info(
-                "workflow_start csv=%s output_dir=%s reuse_prepare=%s skip_predict=%s skip_evaluate=%s sample_limit=%s max_rss_mb=%s model_device=%s require_gpu=%s discovery_strategy=%s",
+                "workflow_start csv=%s output_dir=%s reuse_prepare=%s skip_discovery=%s skip_training=%s skip_predict=%s skip_evaluate=%s sample_limit=%s max_rss_mb=%s model_device=%s require_gpu=%s discovery_strategy=%s",
                 args.csv,
                 root_output_dir,
                 bool(args.reuse_prepare),
+                bool(args.skip_discovery),
+                bool(args.skip_training),
                 bool(args.skip_predict),
                 bool(args.skip_evaluate),
                 args.sample_limit,
@@ -591,29 +620,49 @@ def main() -> None:
                     prepared_pattern_windows_path=prepare_artifacts["prepared_pattern_windows_path"],
                 )
 
-            pattern_windows = (
-                prepared.pattern_windows
-                if prepared is not None
-                else load_prepared_pattern_windows(prepare_artifacts["prepared_pattern_windows_path"])
-            )
-            discovery_started = _log_stage_start(
-                logger,
-                "discovery",
-                output_dir=discovery_output_dir,
-                pattern_windows=len(pattern_windows),
-                strategy=config.discovery.strategy,
-            )
-            discovery = discover_patterns(pattern_windows, config)
-            discovery_artifacts = write_discovery_artifacts(discovery, discovery_output_dir)
-            _log_stage_end(
-                logger,
-                "discovery",
-                discovery_started,
-                discovered_patterns=len(discovery.discovery_result.prototypes),
-                forecast_samples=len(discovery.forecast_samples),
-                pattern_prototypes_path=discovery_artifacts["pattern_prototypes_path"],
-                forecast_sequence_dataset_path=discovery_artifacts["forecast_sequence_dataset_path"],
-            )
+            reuse_discovery = bool(args.skip_discovery) and _has_discovery_bundle(discovery_output_dir)
+            if reuse_discovery:
+                discovery_started = _log_stage_start(
+                    logger, "discovery", mode="reuse", output_dir=discovery_output_dir
+                )
+                discovery_artifacts = {
+                    name: str(path)
+                    for name, path in _discovery_bundle_paths(discovery_output_dir).items()
+                }
+                _log_stage_end(
+                    logger,
+                    "discovery",
+                    discovery_started,
+                    reused=True,
+                    pattern_prototypes_path=discovery_artifacts["pattern_prototypes_path"],
+                    forecast_sequence_dataset_path=discovery_artifacts["forecast_sequence_dataset_path"],
+                )
+                discovery_summary: dict[str, object] = {"reused": True}
+            else:
+                pattern_windows = (
+                    prepared.pattern_windows
+                    if prepared is not None
+                    else load_prepared_pattern_windows(prepare_artifacts["prepared_pattern_windows_path"])
+                )
+                discovery_started = _log_stage_start(
+                    logger,
+                    "discovery",
+                    output_dir=discovery_output_dir,
+                    pattern_windows=len(pattern_windows),
+                    strategy=config.discovery.strategy,
+                )
+                discovery = discover_patterns(pattern_windows, config)
+                discovery_artifacts = write_discovery_artifacts(discovery, discovery_output_dir)
+                discovery_summary = discovery.summary()
+                _log_stage_end(
+                    logger,
+                    "discovery",
+                    discovery_started,
+                    discovered_patterns=len(discovery.discovery_result.prototypes),
+                    forecast_samples=len(discovery.forecast_samples),
+                    pattern_prototypes_path=discovery_artifacts["pattern_prototypes_path"],
+                    forecast_sequence_dataset_path=discovery_artifacts["forecast_sequence_dataset_path"],
+                )
 
             payload: dict[str, object] = {
                 "prepare": {
@@ -625,7 +674,7 @@ def main() -> None:
                     "artifacts": prepare_artifacts,
                 },
                 "discovery": {
-                    **discovery.summary(),
+                    **discovery_summary,
                     "artifacts": discovery_artifacts,
                 },
             }
@@ -633,34 +682,50 @@ def main() -> None:
             try:
                 checkpoint_path = model_output_dir / "sequence_predictor.pt"
                 training_summary_path = model_output_dir / "training_summary.json"
-                training_started = _log_stage_start(
-                    logger,
-                    "training",
-                    checkpoint_path=checkpoint_path,
-                    sequence_dataset_path=discovery_artifacts["forecast_sequence_dataset_path"],
-                )
-                _, training_dataset, saved_checkpoint_path = train_and_save_sequence_predictor_from_dataset(
-                    discovery_artifacts["forecast_sequence_dataset_path"],
-                    config,
-                    checkpoint_path,
-                )
-                training_summary = summarize_training_dataset(training_dataset)
-                training_summary["checkpoint_path"] = str(saved_checkpoint_path)
-                training_summary["sequence_dataset_path"] = discovery_artifacts["forecast_sequence_dataset_path"]
-                training_summary["output_path"] = str(
-                    write_training_summary(training_summary, training_summary_path)
-                )
-                payload["training"] = training_summary
-                del training_dataset
-                gc.collect()
-                _log_stage_end(
-                    logger,
-                    "training",
-                    training_started,
-                    sample_count=training_summary["sample_count"],
-                    checkpoint_path=saved_checkpoint_path,
-                    output_path=training_summary["output_path"],
-                )
+                reuse_training = bool(args.skip_training) and resolve_artifact_path(checkpoint_path).exists()
+                if reuse_training:
+                    training_started = _log_stage_start(
+                        logger, "training", mode="reuse", checkpoint_path=checkpoint_path
+                    )
+                    saved_checkpoint_path = checkpoint_path
+                    training_summary = {
+                        "reused": True,
+                        "checkpoint_path": str(checkpoint_path),
+                        "sequence_dataset_path": discovery_artifacts["forecast_sequence_dataset_path"],
+                    }
+                    payload["training"] = training_summary
+                    _log_stage_end(
+                        logger, "training", training_started, reused=True, checkpoint_path=checkpoint_path
+                    )
+                else:
+                    training_started = _log_stage_start(
+                        logger,
+                        "training",
+                        checkpoint_path=checkpoint_path,
+                        sequence_dataset_path=discovery_artifacts["forecast_sequence_dataset_path"],
+                    )
+                    _, training_dataset, saved_checkpoint_path = train_and_save_sequence_predictor_from_dataset(
+                        discovery_artifacts["forecast_sequence_dataset_path"],
+                        config,
+                        checkpoint_path,
+                    )
+                    training_summary = summarize_training_dataset(training_dataset)
+                    training_summary["checkpoint_path"] = str(saved_checkpoint_path)
+                    training_summary["sequence_dataset_path"] = discovery_artifacts["forecast_sequence_dataset_path"]
+                    training_summary["output_path"] = str(
+                        write_training_summary(training_summary, training_summary_path)
+                    )
+                    payload["training"] = training_summary
+                    del training_dataset
+                    gc.collect()
+                    _log_stage_end(
+                        logger,
+                        "training",
+                        training_started,
+                        sample_count=training_summary["sample_count"],
+                        checkpoint_path=saved_checkpoint_path,
+                        output_path=training_summary["output_path"],
+                    )
 
                 if not args.skip_predict:
                     prediction_started = _log_stage_start(logger, "prediction", checkpoint_path=saved_checkpoint_path)

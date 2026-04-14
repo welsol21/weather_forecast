@@ -177,6 +177,8 @@ The oscillatory type has complex characteristic roots `r = −λ ± iω`, making
 
 L is a fitted parameter of the equation (the mathematical attractor), not an observed value. It belongs in the feature vector.
 
+L and all other parameters are found jointly via nonlinear optimisation (e.g. least squares) — not estimated separately or from heuristics like window mean or inflection point.
+
 ### Channel-first discovery
 
 Patterns are found in two stages:

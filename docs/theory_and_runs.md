@@ -131,7 +131,11 @@ For level: $x_{i+1} = x_i$
 
 ### Segmentation
 
-Run 6 uses the same hierarchical segmentation as Run 5 (predictor blocks → sliding windows within blocks). The segmentation strategy is `new_physics`. Cross-block sample pairs are excluded from training, same as `hierarchical`.
+New Physics does NOT use hierarchical segmentation or predictor blocks. A pattern describes the behaviour of each channel on a given time interval independently of absolute values and season. The same pattern type (e.g. temperature falling linearly) is the same pattern in January and July. Therefore the entire 5-year history is one continuous sequence of patterns — simple sliding windows over the full history, no blocks, no cross-block filtering.
+
+Run 6 incorrectly inherited the hierarchical segmentation from Run 5. This was wrong: the blocks were a workaround for the fact that old statistical features mixed regimes. New Physics features are scale-free and self-contained per window — regime blocks are not needed.
+
+Run 7 corrects this: simple sliding windows over the full history, same as Run 1, but with New Physics feature vectors instead of statistical ones.
 
 ### Implementation Notes
 

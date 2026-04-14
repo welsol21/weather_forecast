@@ -81,7 +81,16 @@ def prepare_pattern_windows(
             peak_events,
             active_config.window,
         )
-    elif active_config.window.segmentation_strategy in ("hierarchical", "new_physics"):
+    elif active_config.window.segmentation_strategy == "new_physics":
+        # Simple stride-based sliding windows over the full history — no blocks.
+        # New Physics patterns are scale-free and self-contained; regime blocks not needed.
+        extrema_windows = build_extrema_windows(
+            signal_frame,
+            extrema_events,
+            peak_events,
+            active_config.window,
+        )
+    elif active_config.window.segmentation_strategy == "hierarchical":
         extrema_windows, window_to_block = build_hierarchical_windows(
             signal_frame,
             dataset.channel_columns,

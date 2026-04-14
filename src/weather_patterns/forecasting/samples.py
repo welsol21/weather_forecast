@@ -17,6 +17,9 @@ def resolve_target_window_count(
         return max(1, forecast_config.target_window_count)
     if window_config.segmentation_strategy == "predictor":
         return max(1, math.ceil(window_config.forecast_horizon_steps / max(window_config.predictor_min_window_steps, 1)))
+    if window_config.segmentation_strategy == "new_physics":
+        # ODE segments are variable-length; predict the next 3 segments after the horizon.
+        return 3
     # "hierarchical" and "extrema" both use stride-based sliding windows of fixed length,
     # so the number of target windows equals horizon / stride.
     return max(1, math.ceil(window_config.forecast_horizon_steps / window_config.stride_steps))
@@ -41,8 +44,14 @@ def build_forecast_samples(
         history_start = current_position - forecast_config.history_window_count + 1
         if history_start < 0:
             continue
-        if window_config.segmentation_strategy == "predictor":
-            horizon_start = pattern_window.start_time + pd.Timedelta(hours=window_config.forecast_horizon_steps)
+        if window_config.segmentation_strategy in ("predictor", "new_physics"):
+            # Time-based target lookup: find the first window starting at or after
+            # (current end_time + forecast_horizon_steps hours), then take
+            # target_window_count consecutive windows.
+            if window_config.segmentation_strategy == "new_physics":
+                horizon_start = pattern_window.end_time + pd.Timedelta(hours=window_config.forecast_horizon_steps)
+            else:
+                horizon_start = pattern_window.start_time + pd.Timedelta(hours=window_config.forecast_horizon_steps)
             first_target_position: int | None = None
             for future_position in range(current_position + 1, len(pattern_windows)):
                 if pattern_windows[future_position].start_time >= horizon_start:

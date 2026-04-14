@@ -147,10 +147,64 @@ Run 7 corrects this: simple sliding windows over the full history, same as Run 1
 
 ---
 
+## Run 8 — Proper Differential Equations, Natural Boundaries, Channel-First Discovery
+
+### What was wrong in Runs 6–7
+
+Runs 6 and 7 used fixed-length sliding windows (stride = 1 hour). This is cutting, not finding. A window boundary placed at an arbitrary clock tick may fall in the middle of a real dynamic regime — the fitted function then describes a transition, not a coherent pattern. The result is noise in the feature space and the model learns nothing (ratio = 1.00).
+
+### Natural boundaries
+
+A pattern boundary is a point where the local differential equation of a channel stops fitting the data — i.e., prediction error exceeds tolerance, or an inflection point is detected. This is determined by the mathematics, not by the clock.
+
+The algorithm walks the time series forward. As long as the best-fitting equation for a channel predicts the next point within tolerance, the pattern continues. When it fails — that is the boundary.
+
+### Four function types — proper differential equations
+
+| Type | Equation | Solution |
+|------|----------|----------|
+| level | `dx/dt = 0` | `x(t) = L` |
+| linear | `dx/dt = c` | `x(t) = x₀ + c·t` |
+| exponential | `dx/dt = -λ(x − L)` | `x(t) = L + (x₀ − L)·e^(−λt)` |
+| oscillatory | `d²x/dt² + 2λẋ + ω²(x−L) = 0` | `x(t) = L + e^(−λt)·(A·cos(ωt) + B·sin(ωt))` |
+
+The oscillatory type has complex characteristic roots `r = −λ ± iω`, making it the only type that captures damped oscillation toward a limit. Parameters λ and ω are real-valued; the complex structure is in the derivation.
+
+### Parameters: what goes where
+
+- **Feature vector** (describes the shape of dynamics, used for clustering): type, L, λ, ω, A, B
+- **Placeholder** (actual observed value, substituted at forecast time): x₀ — the real channel value at the start of the window
+
+L is a fitted parameter of the equation (the mathematical attractor), not an observed value. It belongs in the feature vector.
+
+### Channel-first discovery
+
+Patterns are found in two stages:
+
+1. **Channel patterns**: for each of the 9 channels independently, walk the 5-year series and find segments where a single differential equation holds. Each segment is a channel pattern with its equation parameters.
+
+2. **Final patterns**: take the union of all boundaries from all 9 channel sequences. Each interval between consecutive boundaries is a final pattern — a period where all 9 channels are simultaneously stable under their local equations.
+
+### The 10th channel
+
+The number of channels that simultaneously change their equation at a given boundary (0–9) is recorded as a 10th structural channel. A high value means a sharp synchronised regime transition (e.g. frontal passage). A low value means a quiet single-channel shift. This participates in clustering and sequence prediction alongside the physical channels.
+
+### Clustering
+
+Because patterns have variable length and their features are functions (not fixed-length vectors), clustering uses a **functional distance metric**:
+
+`d(p₁, p₂) = Σ_channels ∫₀¹ (f₁_c(t) − f₂_c(t))² dt`
+
+where both functions are evaluated on a normalised [0, 1] time interval. This allows direct comparison between, say, an exponential and an oscillatory pattern without padding or approximation.
+
+Clustering method: **k-medoids** on the pairwise distance matrix.
+
+---
+
 ## Process of Discovery — Summary
 
 ```
-Run 1: sliding extrema windows + statistical features → baseline established
+Run 1: extrema windows + statistical features → baseline established
        → problem: scale-mixed features, regime-mixing windows
 
 Run 5: hierarchical segmentation → cleaner training pairs, consistent improvement
@@ -159,12 +213,21 @@ Run 5: hierarchical segmentation → cleaner training pairs, consistent improvem
 Insight: patterns should describe *dynamics*, not *absolute state*
        → need scale-free, structure-first representation
 
-New Physics theory: pattern = set of local convergence functions per channel
+New Physics theory (Runs 6–7): pattern = set of local convergence functions per channel
        → scale-free (normalized by local std)
        → analytically solvable forward
-       → forecast = sequence of patterns, not sequence of point predictions
+       → but: fixed-stride sliding windows = cutting, not finding
+       → result: model learns nothing (ratio = 1.00)
 
-Run 6: new_physics segmentation + convergence feature vectors
+Insight: boundaries must come from the mathematics, not the clock
+       → boundary = point where local equation stops fitting
+       → patterns are found, not cut
+
+Run 8: proper differential equations (exponential, oscillatory with complex roots)
+       + natural boundaries from prediction error
+       + channel-first discovery → union of channel boundaries = final patterns
+       + 10th channel = synchrony of boundary events
+       + k-medoids on functional distance metric
 ```
 
-The journey reflects a shift from a data-engineering mindset (summarize the window statistically) to a physics-inspired mindset (identify the local dynamic regime). The scale-free representation allows clustering to group structurally equivalent dynamics regardless of season or baseline level — which is what physical patterns actually are.
+The journey reflects a deepening from statistical summarisation → scale-free dynamics → full differential equation representation with mathematically determined boundaries. The key shift: we find patterns, we do not cut them.

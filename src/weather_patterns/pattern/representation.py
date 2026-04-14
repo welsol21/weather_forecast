@@ -7,8 +7,7 @@ import pandas as pd
 
 from weather_patterns.config import HazardConfig, PipelineConfig
 from weather_patterns.models import ExtremaEvent, ExtremaWindow, PatternWindow, PeakEvent, TimePlaceholders
-
-_CONVERGENCE_DIMS_PER_CHANNEL = 9
+from weather_patterns.pattern.convergence import DIMS_PER_CHANNEL as _CONVERGENCE_DIMS_PER_CHANNEL, DIMS_STRUCTURAL as _CONVERGENCE_DIMS_STRUCTURAL
 INTRA_FEATURES = [
     "current_value",
     "delta_1",
@@ -510,8 +509,8 @@ def flatten_pattern_representation(pattern_window: PatternWindow) -> np.ndarray:
 
 
 def is_convergence_feature_vector(feature_vector: np.ndarray, n_channels: int) -> bool:
-    """Return True if feature_vector has the New Physics convergence layout (9 × n_channels)."""
-    return feature_vector.size == _CONVERGENCE_DIMS_PER_CHANNEL * n_channels and n_channels > 0
+    """Return True if feature_vector has the Run 8 ODE layout (DIMS_PER_CHANNEL × n_channels + DIMS_STRUCTURAL)."""
+    return feature_vector.size == _CONVERGENCE_DIMS_PER_CHANNEL * n_channels + _CONVERGENCE_DIMS_STRUCTURAL and n_channels > 0
 
 
 def build_convergence_pattern_window(

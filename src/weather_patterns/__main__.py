@@ -309,6 +309,66 @@ def _prepare_bundle_paths(output_dir: Path) -> dict[str, Path]:
     }
 
 
+def _git_info() -> dict[str, str]:
+    """Collect git state at launch time."""
+    def _run(cmd: list[str]) -> str:
+        try:
+            return subprocess.check_output(cmd, cwd=Path.cwd(), stderr=subprocess.DEVNULL, text=True).strip()
+        except Exception:
+            return ""
+    commit = _run(["git", "rev-parse", "HEAD"])
+    short = _run(["git", "rev-parse", "--short", "HEAD"])
+    branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    dirty = _run(["git", "status", "--porcelain"])
+    return {
+        "commit": commit,
+        "short": short,
+        "branch": branch,
+        "dirty": bool(dirty),
+        "dirty_files": dirty or None,
+    }
+
+
+def _write_run_manifest(
+    output_dir: Path,
+    args: argparse.Namespace,
+    config: "PipelineConfig",
+) -> Path:
+    import dataclasses, socket
+    manifest = {
+        "launched_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "hostname": socket.gethostname(),
+        "argv": sys.argv,
+        "git": _git_info(),
+        "config": {
+            "date_start": getattr(args, "date_start", None),
+            "date_end": getattr(args, "date_end", None),
+            "max_rows": getattr(args, "max_rows", None),
+            "segmentation_strategy": config.window.segmentation_strategy,
+            "stride_steps": config.window.stride_steps,
+            "length_steps": config.window.length_steps,
+            "forecast_horizon_steps": config.window.forecast_horizon_steps,
+            "discovery_strategy": config.discovery.strategy,
+            "n_clusters": config.discovery.n_clusters,
+            "history_window_count": config.forecast.history_window_count,
+            "model_device": config.compute.model_device,
+            "require_gpu": config.compute.require_gpu,
+        },
+        "flags": {
+            "reuse_prepare": bool(getattr(args, "reuse_prepare", False)),
+            "reuse_prepare_source": getattr(args, "reuse_prepare_source", None),
+            "skip_discovery": bool(getattr(args, "skip_discovery", False)),
+            "skip_training": bool(getattr(args, "skip_training", False)),
+            "skip_predict": bool(getattr(args, "skip_predict", False)),
+            "skip_evaluate": bool(getattr(args, "skip_evaluate", False)),
+        },
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "run_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest_path
+
+
 def _has_prepare_bundle(output_dir: Path) -> bool:
     return all(resolve_artifact_path(path).exists() for path in _prepare_bundle_paths(output_dir).values())
 
@@ -549,11 +609,24 @@ def main() -> None:
         if args.command == "run-split-workflow":
             config = _build_config(args)
             root_output_dir = Path(args.output_dir)
+            manifest_path = _write_run_manifest(root_output_dir, args, config)
             logger, log_path = _configure_workflow_logger(root_output_dir)
             prepare_output_dir = root_output_dir / "prepare"
             discovery_output_dir = root_output_dir / "discovery"
             model_output_dir = root_output_dir / "model"
             plots_output_dir = root_output_dir / "plots"
+            logger.info("run_manifest_written path=%s", manifest_path)
+            git = _git_info()
+            if git.get("dirty"):
+                logger.warning(
+                    "run_manifest_dirty_tree commit=%s branch=%s dirty_files=%s",
+                    git.get("short"), git.get("branch"), git.get("dirty_files"),
+                )
+            else:
+                logger.info(
+                    "run_manifest_git commit=%s branch=%s",
+                    git.get("short"), git.get("branch"),
+                )
             logger.info(
                 "workflow_start csv=%s output_dir=%s reuse_prepare=%s skip_discovery=%s skip_training=%s skip_predict=%s skip_evaluate=%s sample_limit=%s max_rss_mb=%s model_device=%s require_gpu=%s discovery_strategy=%s",
                 args.csv,

@@ -155,20 +155,33 @@ Runs 6 and 7 used fixed-length sliding windows (stride = 1 hour). This is cuttin
 
 ### Natural boundaries
 
-A pattern boundary is a point where the local differential equation of a channel stops fitting the data — i.e., prediction error exceeds tolerance, or an inflection point is detected. This is determined by the mathematics, not by the clock.
+A pattern boundary is a point where the current equation of a channel stops fitting the data. This is determined by the mathematics, not by the clock.
 
-The algorithm walks the time series forward. As long as the best-fitting equation for a channel predicts the next point within tolerance, the pattern continues. When it fails — that is the boundary.
+The algorithm for each channel:
+1. Fit the base equation on an initial window (24 hours for temperature)
+2. Walk forward one step at a time — check whether the fitted equation still describes the data
+3. When it stops fitting — that is the boundary
+4. At the boundary, find the best equation for the next segment from the candidate set
+5. If the same equation continues to work past the initial window boundary (e.g. 48h, 72h) — there is no pattern boundary. The pattern continues as long as the equation holds.
 
-### Four function types — proper differential equations
+The 24-hour initial window is a fitting unit, not a hard boundary. Pattern length is determined entirely by the mathematics.
 
-| Type | Equation | Solution |
-|------|----------|----------|
-| level | `dx/dt = 0` | `x(t) = L` |
-| linear | `dx/dt = c` | `x(t) = x₀ + c·t` |
-| exponential | `dx/dt = -λ(x − L)` | `x(t) = L + (x₀ − L)·e^(−λt)` |
-| oscillatory | `d²x/dt² + 2λẋ + ω²(x−L) = 0` | `x(t) = L + e^(−λt)·(A·cos(ωt) + B·sin(ωt))` |
+### Function types per channel
 
-The oscillatory type has complex characteristic roots `r = −λ ± iω`, making it the only type that captures damped oscillation toward a limit. Parameters λ and ω are real-valued; the complex structure is in the derivation.
+Different channels have different physical dynamics. The candidate equation set is chosen per channel based on its physical nature.
+
+**Temperature** — governed by the 24-hour solar cycle plus synoptic-scale disturbances. Six candidate equations:
+
+| Type | Equation |
+|------|----------|
+| constant | `x(t) = L` |
+| linear | `x(t) = x₀ + c·t` |
+| exponential | `x(t) = L + (x₀ − L)·e^(−λt)` |
+| harmonic | `x(t) = L + A·cos(ωt) + B·sin(ωt)`,  ω = 2π/24 fixed |
+| linear + harmonic | `x(t) = x₀ + c·t + A·cos(ωt) + B·sin(ωt)` |
+| damped harmonic | `x(t) = L + e^(−λt)·(A·cos(ωt) + B·sin(ωt))` |
+
+The base (default) equation for temperature is the **harmonic** — a full 24-hour solar cycle. The algorithm starts with it. If it fails, the other types are tried.
 
 ### Parameters: what goes where
 

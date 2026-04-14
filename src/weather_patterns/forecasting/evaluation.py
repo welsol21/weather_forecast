@@ -208,7 +208,7 @@ def _evaluate_split(
             decoded = decode_forecast_result_new_physics(
                 raw_result,
                 channels=channels,
-                initial_values=source_window.channel_end_values,
+                initial_values=source_window.channel_x0,
                 channel_stds=source_window.channel_stds,
                 stride_hours=config.window.stride_steps * config.time_step_hours,
             )
@@ -341,11 +341,11 @@ def _evaluate_split_iter(
         )
         np_ctx = new_physics_context.get(sample.source_window_id) if new_physics_context else None
         if np_ctx is not None:
-            ch_stds, ch_end_vals = np_ctx
+            ch_stds, ch_x0 = np_ctx
             decoded = decode_forecast_result_new_physics(
                 raw_result,
                 channels=channels,
-                initial_values=ch_end_vals,
+                initial_values=ch_x0,
                 channel_stds=ch_stds,
                 stride_hours=config.window.stride_steps * config.time_step_hours,
             )

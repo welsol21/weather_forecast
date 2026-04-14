@@ -1,356 +1,470 @@
-"""New Physics feature extraction: local convergence functions per channel.
+"""ODE-based local convergence functions for pattern feature extraction.
 
-A pattern is a set of local convergence functions — one per channel — each
-describing how the channel evolves toward its local limit (lim) on the current
-time interval.  Channels are treated independently.  The four function types
-correspond to four regimes of convergence:
+A channel pattern is the best-fitting local differential equation on a time
+segment.  Four types:
 
-    level        — channel is at (or very near) its local limit; lim f(t) reached
-    velocity     — linear approach to limit; constant rate of change
-    acceleration — quadratic / accelerating approach; second derivative active
-    local_ar2    — autoregressive convergence; channel oscillates or decays toward
-                   its AR(2) fixed point  phi_1·X + phi_2·X[-1] + c
+    level        dx/dt = 0              x(t) = L
+    linear       dx/dt = c              x(t) = x0 + c*t
+    exponential  dx/dt = -λ(x - L)     x(t) = L + (x0-L)*exp(-λ*t)
+    oscillatory  d²x/dt² + 2λẋ + ω²(x-L) = 0
+                 x(t) = L + exp(-λ*t)*(A*cos(ω*t) + B*sin(ω*t))
 
-The pattern is NOT about absolute values — it is about the *shape* of convergence.
-The absolute initial conditions (current channel values) are the placeholders that
-are filled at prediction time.
+All parameters (L, λ, ω, A, B, c) are fitted jointly by nonlinear least
+squares on the observed segment.  L is the mathematical attractor of the
+equation — a fitted parameter, not an observed value.
 
-Feature vector layout (per channel, 9 floats):
-  [0..3]  type one-hot: [is_level, is_velocity, is_acceleration, is_ar2]
-  [4]     rate_norm    : (predicted_next − current) / std  (scale-free rate)
-  [5]     accel_norm   : (d²x/dt²) / std                  (0 for level/velocity)
-  [6]     ar_phi1      : AR(2) coefficient φ₁              (0 for non-ar2)
-  [7]     ar_phi2      : AR(2) coefficient φ₂              (0 for non-ar2)
-  [8]     ar_stability : 1 − |φ₁+φ₂|  (1=stable, 0=unit-root, <0=explosive)
+Placeholder: only x0 (the actual observed channel value at the window start)
+is stored separately and substituted at forecast time.
 
-Total feature vector: 9 × N_channels floats.
+Feature vector per channel (6 floats):
+    [0]  L      — fitted limit (normalised by channel std)
+    [1]  c      — linear rate (normalised; 0 for non-linear types)
+    [2]  λ      — convergence / damping rate  (0 for level/linear)
+    [3]  ω      — oscillation frequency       (0 for non-oscillatory)
+    [4]  A      — oscillation cosine coeff    (normalised; 0 for non-oscillatory)
+    [5]  B      — oscillation sine coeff      (normalised; 0 for non-oscillatory)
+
+Type is encoded separately as an integer (0–3) and stored alongside the vector.
+
+Total feature vector including type one-hot (4) + 6 params = 10 floats per channel.
+For 9 physical channels + 1 structural (10th channel = boundary synchrony count):
+the structural channel contributes 1 float only (no ODE).
+Total: 9 * 10 + 1 = 91 floats.
 """
 
 from __future__ import annotations
 
+import logging
+import time
+from dataclasses import dataclass
+
 import numpy as np
+from scipy.optimize import least_squares
 
-from weather_patterns.config import WindowConfig
-from weather_patterns.pattern.windows import (
-    _is_circular_channel,
-    _predict_level,
-    _predict_velocity,
-    _predict_acceleration,
-    _predict_local_ar2,
-    _prediction_error,
-    _wrap_prediction,
-    _unwrap_channel,
-)
+logger = logging.getLogger(__name__)
 
-_DIMS_PER_CHANNEL = 9
-_TYPE_LEVEL = 0
-_TYPE_VELOCITY = 1
-_TYPE_ACCELERATION = 2
-_TYPE_AR2 = 3
+# ── Constants ─────────────────────────────────────────────────────────────────
 
+TYPE_LEVEL = 0
+TYPE_LINEAR = 1
+TYPE_EXPONENTIAL = 2
+TYPE_OSCILLATORY = 3
 
-def _fit_ar2_params(
-    history: np.ndarray,
-    fit_window: int,
-) -> tuple[float, float, float]:
-    """Fit AR(2) via OLS on the last `fit_window` points.
+DIMS_TYPE_ONEHOT = 4
+DIMS_PARAMS = 6          # L, c, λ, ω, A, B
+DIMS_PER_CHANNEL = DIMS_TYPE_ONEHOT + DIMS_PARAMS   # 10
+DIMS_STRUCTURAL = 1      # 10th channel: boundary synchrony count
 
-    Returns (phi1, phi2, intercept).  Falls back to (0, 0, history[-1]) when
-    there are too few points or the design matrix is rank-deficient.
-    """
-    usable = history[-max(fit_window, 3):]
-    if usable.size < 3:
-        return 0.0, 0.0, float(history[-1])
-    design = np.column_stack([
-        np.ones((usable.size - 2,), dtype=float),
-        usable[1:-1],
-        usable[:-2],
-    ])
-    target = usable[2:]
-    try:
-        coeffs, *_ = np.linalg.lstsq(design, target, rcond=None)
-        intercept, phi1, phi2 = float(coeffs[0]), float(coeffs[1]), float(coeffs[2])
-    except np.linalg.LinAlgError:
-        return 0.0, 0.0, float(history[-1])
-    return phi1, phi2, intercept
+# Minimum segment length (points) required to attempt each fit
+MIN_POINTS = {
+    TYPE_LEVEL: 1,
+    TYPE_LINEAR: 2,
+    TYPE_EXPONENTIAL: 3,
+    TYPE_OSCILLATORY: 10,
+}
+
+# Free parameters per type (excluding x0 which is pinned to y[0]).
+# Used for complexity penalty: adjusted_mse = mse * (1 + FREE_PARAMS * penalty).
+# Prevents overfitting simpler dynamics with high-parameter models.
+_FREE_PARAMS = {
+    TYPE_LEVEL: 1,        # L
+    TYPE_LINEAR: 1,       # c
+    TYPE_EXPONENTIAL: 2,  # L, λ
+    TYPE_OSCILLATORY: 5,  # L, λ, ω, A, B
+}
+_COMPLEXITY_PENALTY = 0.15   # 15% MSE markup per free parameter above TYPE_LEVEL
+
+# Regularisation: penalise explosive solutions
+_LAMBDA_MAX = 10.0
+_OMEGA_MAX = np.pi   # Nyquist for unit time-step
 
 
-def _channel_convergence_vector(
-    series: np.ndarray,
-    channel: str,
-    history_window: int,
-    fit_window: int,
+# ── ODE solutions (normalised time t = 0, 1, 2, ...) ─────────────────────────
+
+def _solve_level(t: np.ndarray, L: float) -> np.ndarray:
+    return np.full_like(t, L, dtype=float)
+
+
+def _solve_linear(t: np.ndarray, x0: float, c: float) -> np.ndarray:
+    return x0 + c * t
+
+
+def _solve_exponential(t: np.ndarray, x0: float, L: float, lam: float) -> np.ndarray:
+    return L + (x0 - L) * np.exp(-lam * t)
+
+
+def _solve_oscillatory(
+    t: np.ndarray,
+    x0: float,
+    L: float,
+    lam: float,
+    omega: float,
+    A: float,
+    B: float,
 ) -> np.ndarray:
-    """Compute the 9-dim convergence feature vector for a single channel.
+    return L + np.exp(-lam * t) * (A * np.cos(omega * t) + B * np.sin(omega * t))
 
-    `series` is the full (smoothed) channel array for the window.
-    The last `history_window` points are used to fit local predictors.
+
+# ── Fitting routines ──────────────────────────────────────────────────────────
+
+def _fit_level(y: np.ndarray, t: np.ndarray) -> tuple[float, float]:
+    """Returns (L, residual_mse)."""
+    L = float(np.mean(y))
+    mse = float(np.mean((y - L) ** 2))
+    return L, mse
+
+
+def _fit_linear(y: np.ndarray, t: np.ndarray) -> tuple[float, float, float]:
+    """Returns (x0, c, residual_mse)."""
+    # Linear regression y = x0 + c*t
+    A = np.column_stack([np.ones_like(t), t])
+    result, *_ = np.linalg.lstsq(A, y, rcond=None)
+    x0, c = float(result[0]), float(result[1])
+    pred = _solve_linear(t, x0, c)
+    mse = float(np.mean((y - pred) ** 2))
+    return x0, c, mse
+
+
+def _fit_exponential(
+    y: np.ndarray,
+    t: np.ndarray,
+) -> tuple[float, float, float, float]:
+    """Returns (x0, L, λ, residual_mse) via nonlinear least squares."""
+    x0_obs = float(y[0])
+    L0 = float(np.mean(y[-max(1, len(y) // 4):]))   # rough asymptote guess
+    lam0 = 0.1
+
+    def residuals(params: np.ndarray) -> np.ndarray:
+        L, lam = params
+        lam_c = np.clip(lam, 1e-6, _LAMBDA_MAX)
+        return y - _solve_exponential(t, x0_obs, L, lam_c)
+
+    try:
+        res = least_squares(
+            residuals,
+            x0=[L0, lam0],
+            bounds=([-np.inf, 1e-6], [np.inf, _LAMBDA_MAX]),
+            method="trf",
+            max_nfev=200,
+        )
+        L, lam = float(res.x[0]), float(res.x[1])
+    except Exception:
+        L, lam = L0, lam0
+
+    pred = _solve_exponential(t, x0_obs, L, lam)
+    mse = float(np.mean((y - pred) ** 2))
+    return x0_obs, L, lam, mse
+
+
+def _estimate_omega(y: np.ndarray, t: np.ndarray) -> float:
+    """Estimate dominant oscillation frequency via FFT on de-trended signal."""
+    if len(y) < 4:
+        return 0.1
+    detrended = y - np.mean(y)
+    fft = np.abs(np.fft.rfft(detrended))
+    freqs = np.fft.rfftfreq(len(y))
+    # Exclude DC (index 0)
+    if len(fft) < 2:
+        return 0.1
+    dominant_idx = int(np.argmax(fft[1:]) + 1)
+    omega = float(2 * np.pi * freqs[dominant_idx])
+    return np.clip(omega, 1e-3, _OMEGA_MAX)
+
+
+def _fit_oscillatory(
+    y: np.ndarray,
+    t: np.ndarray,
+) -> tuple[float, float, float, float, float, float, float]:
+    """Returns (x0, L, λ, ω, A, B, residual_mse) via nonlinear least squares."""
+    x0_obs = float(y[0])
+    L0 = float(np.mean(y))
+    omega0 = _estimate_omega(y, t)
+    lam0 = 0.05
+    # With L and ω fixed, A and B are linear — use two-stage fit
+    A0 = float(y[0] - L0)
+    B0 = 0.0
+
+    def residuals(params: np.ndarray) -> np.ndarray:
+        L, lam, omega, A, B = params
+        lam_c = np.clip(lam, 1e-6, _LAMBDA_MAX)
+        omega_c = np.clip(omega, 1e-3, _OMEGA_MAX)
+        return y - _solve_oscillatory(t, x0_obs, L, lam_c, omega_c, A, B)
+
+    try:
+        res = least_squares(
+            residuals,
+            x0=[L0, lam0, omega0, A0, B0],
+            bounds=(
+                [-np.inf, 1e-6, 1e-3, -np.inf, -np.inf],
+                [np.inf, _LAMBDA_MAX, _OMEGA_MAX, np.inf, np.inf],
+            ),
+            method="trf",
+            max_nfev=400,
+        )
+        L, lam, omega, A, B = (
+            float(res.x[0]), float(res.x[1]), float(res.x[2]),
+            float(res.x[3]), float(res.x[4]),
+        )
+    except Exception:
+        L, lam, omega, A, B = L0, lam0, omega0, A0, B0
+
+    pred = _solve_oscillatory(t, x0_obs, L, lam, omega, A, B)
+    mse = float(np.mean((y - pred) ** 2))
+    return x0_obs, L, lam, omega, A, B, mse
+
+
+# ── Channel feature vector ────────────────────────────────────────────────────
+
+@dataclass
+class ChannelFit:
+    """Result of fitting one channel on one segment."""
+    type_idx: int          # TYPE_LEVEL / LINEAR / EXPONENTIAL / OSCILLATORY
+    L: float               # fitted limit (in normalised units)
+    c: float               # linear rate (normalised)
+    lam: float             # convergence rate λ
+    omega: float           # oscillation frequency ω
+    A: float               # oscillation cosine amplitude (normalised)
+    B: float               # oscillation sine amplitude (normalised)
+    mse: float             # residual MSE on normalised series
+    x0: float              # actual observed value at segment start (placeholder)
+    std: float             # channel std on this segment (for denormalisation)
+
+
+def fit_channel_segment(
+    y_raw: np.ndarray,
+    channel: str,
+) -> ChannelFit:
+    """Fit the best ODE type to a raw channel segment.
+
+    Returns a ChannelFit with all parameters in normalised (std-scaled) space
+    except x0 and std which are in original units.
     """
-    vec = np.zeros(_DIMS_PER_CHANNEL, dtype=float)
+    t_start = time.perf_counter()
 
-    clean = series[np.isfinite(series)]
-    if clean.size == 0:
-        return vec
+    finite = y_raw[np.isfinite(y_raw)]
+    if finite.size == 0:
+        return ChannelFit(TYPE_LEVEL, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
 
-    # Normalise (scale-free representation)
-    std = float(np.std(clean)) if clean.size > 1 else 1.0
+    x0_raw = float(finite[0])
+    std = float(np.std(finite)) if finite.size > 1 else 1.0
     if std < 1e-8:
         std = 1.0
-    mean = float(np.mean(clean))
+    mean = float(np.mean(finite))
 
-    # Work on unwrapped / normalised history
-    history_raw = series[-history_window:] if series.size >= history_window else series
-    history_raw = _unwrap_channel(history_raw, channel)
-    history_norm = (history_raw - mean) / std
+    # Normalise
+    y = (finite - mean) / std
+    t = np.arange(len(y), dtype=float)
 
-    if history_norm.size == 0:
-        return vec
+    n = len(y)
+    best: ChannelFit | None = None
 
-    # Actual (last point) in normalised space — used only for error comparison
-    actual_norm = history_norm[-1]
+    def _adjusted(mse: float, type_idx: int) -> float:
+        extra = _FREE_PARAMS[type_idx] - _FREE_PARAMS[TYPE_LEVEL]
+        return mse * (1.0 + extra * _COMPLEXITY_PENALTY)
 
-    # ── fit all applicable predictor types ────────────────────────────────────
-    errors: list[tuple[float, int]] = []
+    # ── level ──────────────────────────────────────────────────────────────
+    if n >= MIN_POINTS[TYPE_LEVEL]:
+        L, mse = _fit_level(y, t)
+        best = ChannelFit(TYPE_LEVEL, L, 0.0, 0.0, 0.0, 0.0, 0.0, _adjusted(mse, TYPE_LEVEL), x0_raw, std)
 
-    # level
-    pred_level = _predict_level(history_norm)
-    errors.append((_prediction_error(actual_norm, _wrap_prediction(pred_level, channel), channel), _TYPE_LEVEL))
+    # ── linear ─────────────────────────────────────────────────────────────
+    if n >= MIN_POINTS[TYPE_LINEAR]:
+        _, c, mse = _fit_linear(y, t)
+        L_lin = float(y[0] + c * (n - 1))
+        adj = _adjusted(mse, TYPE_LINEAR)
+        if best is None or adj < best.mse:
+            best = ChannelFit(TYPE_LINEAR, L_lin, c, 0.0, 0.0, 0.0, 0.0, adj, x0_raw, std)
 
-    # velocity
-    if history_norm.size >= 2:
-        pred_vel = _predict_velocity(history_norm)
-        errors.append((_prediction_error(actual_norm, _wrap_prediction(pred_vel, channel), channel), _TYPE_VELOCITY))
+    # ── exponential ────────────────────────────────────────────────────────
+    if n >= MIN_POINTS[TYPE_EXPONENTIAL]:
+        _, L, lam, mse = _fit_exponential(y, t)
+        adj = _adjusted(mse, TYPE_EXPONENTIAL)
+        if best is None or adj < best.mse:
+            best = ChannelFit(TYPE_EXPONENTIAL, L, 0.0, lam, 0.0, 0.0, 0.0, adj, x0_raw, std)
 
-    # acceleration
-    if history_norm.size >= 3:
-        pred_acc = _predict_acceleration(history_norm)
-        errors.append((_prediction_error(actual_norm, _wrap_prediction(pred_acc, channel), channel), _TYPE_ACCELERATION))
-        try:
-            pred_ar2 = _predict_local_ar2(history_norm, fit_window)
-            errors.append((_prediction_error(actual_norm, _wrap_prediction(pred_ar2, channel), channel), _TYPE_AR2))
-        except np.linalg.LinAlgError:
-            pass  # SVD did not converge — skip AR2 candidate for this window
+    # ── oscillatory ────────────────────────────────────────────────────────
+    if n >= MIN_POINTS[TYPE_OSCILLATORY]:
+        _, L, lam, omega, A, B, mse = _fit_oscillatory(y, t)
+        adj = _adjusted(mse, TYPE_OSCILLATORY)
+        if best is None or adj < best.mse:
+            best = ChannelFit(TYPE_OSCILLATORY, L, 0.0, lam, omega, A, B, adj, x0_raw, std)
 
-    best_type = min(errors, key=lambda item: item[0])[1]
+    elapsed = time.perf_counter() - t_start
+    logger.debug(
+        "fit_channel channel=%s n=%d best_type=%d mse=%.6f elapsed_ms=%.1f",
+        channel, n, best.type_idx, best.mse, elapsed * 1000,
+    )
+    return best  # type: ignore[return-value]
 
-    # ── encode one-hot type ────────────────────────────────────────────────────
-    vec[best_type] = 1.0
 
-    # ── compute rate (scale-free, one-step-ahead change) ──────────────────────
-    if best_type == _TYPE_LEVEL:
-        rate_norm = 0.0
-        accel_norm = 0.0
-        ar_phi1 = 0.0
-        ar_phi2 = 0.0
-        ar_stability = 1.0
+def channel_fit_to_vector(fit: ChannelFit) -> np.ndarray:
+    """Encode a ChannelFit as a 10-dim feature vector.
 
-    elif best_type == _TYPE_VELOCITY:
-        rate_norm = float(history_norm[-1] - history_norm[-2]) if history_norm.size >= 2 else 0.0
-        accel_norm = 0.0
-        ar_phi1 = 0.0
-        ar_phi2 = 0.0
-        ar_stability = 1.0
-
-    elif best_type == _TYPE_ACCELERATION:
-        rate_norm = float(history_norm[-1] - history_norm[-2]) if history_norm.size >= 2 else 0.0
-        accel_norm = float(history_norm[-1] - 2 * history_norm[-2] + history_norm[-3]) if history_norm.size >= 3 else 0.0
-        ar_phi1 = 0.0
-        ar_phi2 = 0.0
-        ar_stability = 1.0
-
-    else:  # _TYPE_AR2
-        phi1, phi2, intercept = _fit_ar2_params(history_norm, fit_window)
-        ar_phi1 = phi1
-        ar_phi2 = phi2
-        ar_stability = float(1.0 - abs(phi1 + phi2))
-        # rate_norm = what the AR model predicts as next step minus current
-        pred_next_norm = intercept + phi1 * history_norm[-1] + (phi2 * history_norm[-2] if history_norm.size >= 2 else 0.0)
-        rate_norm = float(pred_next_norm - history_norm[-1])
-        accel_norm = 0.0  # AR captures non-linearity through its coefficients
-
-    vec[4] = rate_norm
-    vec[5] = accel_norm
-    vec[6] = ar_phi1
-    vec[7] = ar_phi2
-    vec[8] = ar_stability
-
+    Layout: [is_level, is_linear, is_exp, is_osc, L, c, λ, ω, A, B]
+    """
+    vec = np.zeros(DIMS_PER_CHANNEL, dtype=float)
+    vec[fit.type_idx] = 1.0   # one-hot type
+    vec[4] = fit.L
+    vec[5] = fit.c
+    vec[6] = fit.lam
+    vec[7] = fit.omega
+    vec[8] = fit.A
+    vec[9] = fit.B
     return vec
 
 
-def compute_convergence_feature_vector(
-    smoothed_series: dict[str, np.ndarray],
-    channels: list[str],
-    config: WindowConfig,
-) -> np.ndarray:
-    """Build the full New Physics feature vector for a pattern window.
-
-    Concatenates 9-dim per-channel convergence vectors in `channels` order.
-    Total length = 9 × len(channels).
-    """
-    parts: list[np.ndarray] = []
-    history_window = max(config.predictor_history_window_steps, 3)
-    fit_window = max(config.predictor_fit_window_steps, 3)
-    for channel in channels:
-        series = smoothed_series.get(channel)
-        if series is None or series.size == 0:
-            parts.append(np.zeros(_DIMS_PER_CHANNEL, dtype=float))
-            continue
-        parts.append(_channel_convergence_vector(series, channel, history_window, fit_window))
-    return np.concatenate(parts) if parts else np.zeros(0, dtype=float)
-
-
-def channel_stds_from_window(
-    smoothed_series: dict[str, np.ndarray],
-    channels: list[str],
-) -> dict[str, float]:
-    """Return per-channel std (scale) from the smoothed window data.
-
-    Used as placeholders for denormalising the convergence reconstruction.
-    """
-    stds: dict[str, float] = {}
-    for channel in channels:
-        series = smoothed_series.get(channel)
-        if series is None or series.size == 0:
-            stds[channel] = 1.0
-            continue
-        clean = series[np.isfinite(series)]
-        std = float(np.std(clean)) if clean.size > 1 else 1.0
-        stds[channel] = max(std, 1e-8)
-    return stds
-
-
-def channel_end_values_from_window(
-    raw_series: dict[str, np.ndarray],
-    channels: list[str],
-) -> dict[str, float]:
-    """Return the last finite observed value per channel (the placeholder)."""
-    end_values: dict[str, float] = {}
-    for channel in channels:
-        series = raw_series.get(channel)
-        if series is None or series.size == 0:
-            end_values[channel] = 0.0
-            continue
-        finite = series[np.isfinite(series)]
-        end_values[channel] = float(finite[-1]) if finite.size > 0 else 0.0
-    return end_values
-
-
-# ── Reconstruction ────────────────────────────────────────────────────────────
-
-def _parse_channel_vector(vec: np.ndarray) -> tuple[int, float, float, float, float, float]:
-    """Extract (type_idx, rate_norm, accel_norm, phi1, phi2, stability) from 9-dim slice."""
+def channel_fit_from_vector(vec: np.ndarray) -> ChannelFit:
+    """Reconstruct a ChannelFit from a 10-dim feature vector (no x0/std)."""
     type_idx = int(np.argmax(vec[:4]))
-    return type_idx, float(vec[4]), float(vec[5]), float(vec[6]), float(vec[7]), float(vec[8])
+    return ChannelFit(
+        type_idx=type_idx,
+        L=float(vec[4]),
+        c=float(vec[5]),
+        lam=float(vec[6]),
+        omega=float(vec[7]),
+        A=float(vec[8]),
+        B=float(vec[9]),
+        mse=0.0,
+        x0=0.0,
+        std=1.0,
+    )
 
 
-def solve_convergence_forward(
-    pred_type: int,
-    rate_norm: float,
-    accel_norm: float,
-    ar_phi1: float,
-    ar_phi2: float,
-    initial_value: float,
-    channel_std: float,
-    channel: str,
+# ── Prediction error for boundary detection ───────────────────────────────────
+
+def predict_next(fit: ChannelFit, y_raw: np.ndarray) -> float:
+    """Predict the next raw value given the current fitted ODE and the last
+    observed raw value.  Used by the segmentation algorithm to detect
+    boundaries.
+    """
+    if len(y_raw) == 0:
+        return fit.x0
+
+    std = fit.std if fit.std > 1e-8 else 1.0
+    mean_approx = float(np.mean(y_raw[np.isfinite(y_raw)])) if len(y_raw) > 0 else 0.0
+    n = len(y_raw)
+    t_next = float(n)
+
+    if fit.type_idx == TYPE_LEVEL:
+        y_norm_next = fit.L
+    elif fit.type_idx == TYPE_LINEAR:
+        y_norm_next = (y_raw[0] - mean_approx) / std + fit.c * t_next
+    elif fit.type_idx == TYPE_EXPONENTIAL:
+        x0_norm = (y_raw[0] - mean_approx) / std
+        y_norm_next = fit.L + (x0_norm - fit.L) * np.exp(-fit.lam * t_next)
+    else:  # oscillatory
+        x0_norm = (y_raw[0] - mean_approx) / std
+        y_norm_next = fit.L + np.exp(-fit.lam * t_next) * (
+            fit.A * np.cos(fit.omega * t_next) + fit.B * np.sin(fit.omega * t_next)
+        )
+
+    return float(y_norm_next * std + mean_approx)
+
+
+# ── Reconstruction (forecast decoding) ───────────────────────────────────────
+
+def solve_forward(
+    fit: ChannelFit,
+    x0_actual: float,
     horizon_steps: int,
 ) -> list[float]:
-    """Solve a local convergence function forward for `horizon_steps` steps.
+    """Project a fitted ODE forward for `horizon_steps` steps.
 
-    Parameters
-    ----------
-    pred_type        : 0=level, 1=velocity, 2=acceleration, 3=ar2
-    rate_norm        : normalised one-step rate (rate_norm * std = actual rate)
-    accel_norm       : normalised second derivative
-    ar_phi1, ar_phi2 : AR(2) coefficients (normalised-space)
-    initial_value    : last observed value of the channel (placeholder)
-    channel_std      : std of the current window (scale factor)
-    channel          : channel name (for circular handling)
-    horizon_steps    : how many steps to project forward
+    x0_actual is the placeholder — the real observed value at the start of the
+    window, used to anchor the absolute level of the forecast.
     """
     if horizon_steps <= 0:
         return []
 
-    rate = rate_norm * channel_std
-    accel = accel_norm * channel_std
+    std = fit.std if fit.std > 1e-8 else 1.0
+    # In normalised space x0 corresponds to 0 (mean-subtracted seed)
+    x0_norm = 0.0
+    t = np.arange(1, horizon_steps + 1, dtype=float)
 
-    if pred_type == _TYPE_LEVEL:
-        values = [initial_value] * horizon_steps
+    if fit.type_idx == TYPE_LEVEL:
+        y_norm = np.full(horizon_steps, fit.L)
+    elif fit.type_idx == TYPE_LINEAR:
+        y_norm = x0_norm + fit.c * t
+    elif fit.type_idx == TYPE_EXPONENTIAL:
+        y_norm = fit.L + (x0_norm - fit.L) * np.exp(-fit.lam * t)
+    else:  # oscillatory
+        y_norm = fit.L + np.exp(-fit.lam * t) * (
+            fit.A * np.cos(fit.omega * t) + fit.B * np.sin(fit.omega * t)
+        )
 
-    elif pred_type == _TYPE_VELOCITY:
-        values = [initial_value + rate * t for t in range(1, horizon_steps + 1)]
-
-    elif pred_type == _TYPE_ACCELERATION:
-        values = [
-            initial_value + rate * t + 0.5 * accel * t * (t - 1)
-            for t in range(1, horizon_steps + 1)
-        ]
-
-    else:  # _TYPE_AR2
-        # AR(2) in normalised space, seeded from initial conditions.
-        # We estimate prev value as initial - rate.
-        x0_norm = 0.0  # normalised current = 0 (mean-subtracted)
-        x_prev_norm = -rate_norm  # normalised previous (estimate)
-        history_norm = [x_prev_norm, x0_norm]
-        # Intercept chosen so fixed point = 0 (the current mean level).
-        # This means lim = initial_value; the AR shape governs convergence speed.
-        c_norm = x0_norm * (1.0 - ar_phi1 - ar_phi2)
-        for _ in range(horizon_steps):
-            next_norm = c_norm + ar_phi1 * history_norm[-1] + ar_phi2 * history_norm[-2]
-            history_norm.append(next_norm)
-        values = [initial_value + v_norm * channel_std for v_norm in history_norm[2:]]
-
-    # Wrap circular channels (wind direction)
-    if _is_circular_channel(channel):
-        values = [float(np.mod(v, 360.0)) for v in values]
+    # Denormalise: add x0_actual as the absolute anchor
+    values = [float(x0_actual + v * std) for v in y_norm]
 
     return values
 
 
 def reconstruct_channel_sequence(
-    predicted_feature_matrix: np.ndarray,
+    feature_matrix: np.ndarray,
     channel_idx: int,
-    n_channels: int,
-    initial_value: float,
-    channel_std: float,
-    channel: str,
+    x0_actual: float,
 ) -> list[float]:
     """Reconstruct a channel's value sequence from a predicted pattern matrix.
 
-    Each row of `predicted_feature_matrix` is the feature vector of one
-    predicted pattern window.  We solve each pattern's local function one step
-    forward, chaining the end value as the next pattern's initial condition.
-
-    Parameters
-    ----------
-    predicted_feature_matrix : shape (n_windows, 9 * n_channels)
-    channel_idx              : index of this channel in the channel list
-    n_channels               : total number of channels
-    initial_value            : current observed value (placeholder)
-    channel_std              : std of current window (scale)
-    channel                  : channel name (for circular handling)
+    Each row of feature_matrix is the feature vector of one predicted pattern
+    (full vector for all channels).  We chain: end of pattern i → x0 of
+    pattern i+1.
     """
     values: list[float] = []
-    current = initial_value
+    current_x0 = x0_actual
 
-    for row in predicted_feature_matrix:
-        start = channel_idx * _DIMS_PER_CHANNEL
-        ch_vec = row[start: start + _DIMS_PER_CHANNEL]
-        pred_type, rate_norm, accel_norm, phi1, phi2, _ = _parse_channel_vector(ch_vec)
-
-        # Each pattern window contributes ONE predicted step forward.
-        step_values = solve_convergence_forward(
-            pred_type=pred_type,
-            rate_norm=rate_norm,
-            accel_norm=accel_norm,
-            ar_phi1=phi1,
-            ar_phi2=phi2,
-            initial_value=current,
-            channel_std=channel_std,
-            channel=channel,
-            horizon_steps=1,
-        )
-        if step_values:
-            current = step_values[0]
-            values.append(current)
+    for row in feature_matrix:
+        start = channel_idx * DIMS_PER_CHANNEL
+        ch_vec = row[start: start + DIMS_PER_CHANNEL]
+        fit = channel_fit_from_vector(ch_vec)
+        step = solve_forward(fit, current_x0, horizon_steps=1)
+        if step:
+            current_x0 = step[0]
+            values.append(current_x0)
 
     return values
+
+
+# ── Functional distance (for k-medoids) ──────────────────────────────────────
+
+def _channel_integral_distance(fit1: ChannelFit, fit2: ChannelFit) -> float:
+    """∫₀¹ (f1(t) - f2(t))² dt on normalised [0,1] interval, 100-point quad."""
+    t = np.linspace(0.0, 1.0, 100)
+
+    def _eval(fit: ChannelFit) -> np.ndarray:
+        if fit.type_idx == TYPE_LEVEL:
+            return _solve_level(t, fit.L)
+        elif fit.type_idx == TYPE_LINEAR:
+            return _solve_linear(t, 0.0, fit.c)
+        elif fit.type_idx == TYPE_EXPONENTIAL:
+            return _solve_exponential(t, 0.0, fit.L, fit.lam)
+        else:
+            return _solve_oscillatory(t, 0.0, fit.L, fit.lam, fit.omega, fit.A, fit.B)
+
+    diff = _eval(fit1) - _eval(fit2)
+    return float(np.trapz(diff ** 2, t))
+
+
+def pattern_distance(
+    vec1: np.ndarray,
+    vec2: np.ndarray,
+    n_channels: int,
+) -> float:
+    """Sum of per-channel integral distances between two pattern feature vectors.
+
+    Vectors have shape (n_channels * DIMS_PER_CHANNEL + DIMS_STRUCTURAL,).
+    The structural (10th) channel contributes a simple squared difference.
+    """
+    total = 0.0
+    for ch in range(n_channels):
+        s = ch * DIMS_PER_CHANNEL
+        f1 = channel_fit_from_vector(vec1[s: s + DIMS_PER_CHANNEL])
+        f2 = channel_fit_from_vector(vec2[s: s + DIMS_PER_CHANNEL])
+        total += _channel_integral_distance(f1, f2)
+
+    # Structural channel: last element
+    if len(vec1) > n_channels * DIMS_PER_CHANNEL:
+        s1 = float(vec1[-1])
+        s2 = float(vec2[-1])
+        total += (s1 - s2) ** 2
+
+    return total

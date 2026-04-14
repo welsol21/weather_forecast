@@ -101,9 +101,11 @@ class PatternWindow:
     feature_vector: np.ndarray
     extrema_window: ExtremaWindow
     parent_block_id: int | None = None
-    # New Physics fields: scale and initial conditions per channel (empty for legacy windows)
+    # Run 8 fields (empty dicts for legacy windows)
+    # channel_x0: observed value at segment START — the placeholder substituted at forecast time
+    # channel_stds: local std of the segment — needed to denormalise ODE parameters at decode time
+    channel_x0: dict[str, float] = field(default_factory=dict)
     channel_stds: dict[str, float] = field(default_factory=dict)
-    channel_end_values: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

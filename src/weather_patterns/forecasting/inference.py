@@ -50,7 +50,7 @@ def predict_future_pattern_sequence(
         return decode_forecast_result_new_physics(
             raw_result,
             channels=channels,
-            initial_values=last_window.channel_end_values,
+            initial_values=last_window.channel_x0,
             channel_stds=last_window.channel_stds,
             stride_hours=stride_hours,
         )

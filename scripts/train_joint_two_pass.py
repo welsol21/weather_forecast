@@ -1,4 +1,4 @@
-"""Joint two-channel (temperature + pressure) segment sequence forecaster.
+"""Joint three-channel (temperature + pressure + wind speed) sequence forecaster.
 
 Input:  segments/joint_segments.json  (built by run_joint_segmentation.py)
 Output: artifacts/joint_two_pass.pt
@@ -6,9 +6,10 @@ Output: artifacts/joint_two_pass.pt
 Each pattern vector:
   [temp_onehot(6), temp_L, temp_c, temp_lam, temp_A, temp_B,   # 11
    pres_onehot(3), pres_L, pres_c, pres_lam, pres_A,           # 7
+   wind_onehot(3), wind_L, wind_c, wind_lam, wind_A,           # 7
    duration/24,                                                  # 1
    sin/cos day-of-year, sin/cos hour-of-day]                    # 4
-  = 23 dims total
+  = 30 dims total
 
 K is derived from history: for query date + horizon T, count how many
 joint patterns historically covered T hours on this day-of-year (±7 days).
@@ -40,6 +41,10 @@ from weather_patterns.pattern.segmentation_pressure import (
     TRY_ORDER as PRES_EQ_ORDER, _predict_value as pres_predict,
     PressureFit,
 )
+from weather_patterns.pattern.segmentation_windspeed import (
+    TRY_ORDER as WIND_EQ_ORDER, _predict_value as wind_predict,
+    WindspeedFit,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,11 +63,13 @@ MODEL_PATH    = Path("artifacts/joint_two_pass.pt")
 # Feature dimensions
 TEMP_EQ_N  = len(TEMP_EQ_ORDER)   # 6
 PRES_EQ_N  = len(PRES_EQ_ORDER)   # 3
-TEMP_PARAM = 5                     # L, c, lam, A, B
-PRES_PARAM = 4                     # L, c, lam, A
-ODE_DIM    = TEMP_EQ_N + TEMP_PARAM + PRES_EQ_N + PRES_PARAM + 1  # +1 duration/24 = 19
-TIME_DIM   = 4
-FEAT_DIM   = ODE_DIM + TIME_DIM   # 23
+WIND_EQ_N  = len(WIND_EQ_ORDER)   # 3
+TEMP_PARAM = 5   # L, c, lam, A, B
+PRES_PARAM = 4   # L, c, lam, A
+WIND_PARAM = 4   # L, c, lam, A
+ODE_DIM = TEMP_EQ_N + TEMP_PARAM + PRES_EQ_N + PRES_PARAM + WIND_EQ_N + WIND_PARAM + 1  # +1 dur = 26
+TIME_DIM = 4
+FEAT_DIM = ODE_DIM + TIME_DIM   # 30
 
 K_MAX    = 48
 D_MODEL  = 128
@@ -75,6 +82,7 @@ EPOCHS   = 600
 
 TEMP_EQ_IDX = {eq: i for i, eq in enumerate(TEMP_EQ_ORDER)}
 PRES_EQ_IDX = {eq: i for i, eq in enumerate(PRES_EQ_ORDER)}
+WIND_EQ_IDX = {eq: i for i, eq in enumerate(WIND_EQ_ORDER)}
 
 
 # ── Normalisation scales ───────────────────────────────────────────────────────
@@ -93,6 +101,10 @@ def _global_scales(segments: list[dict]) -> dict:
         "pres_c":   p90([abs(s["pres_fit"]["c"])   for s in segments if abs(s["pres_fit"]["c"])   > 1e-6]),
         "pres_lam": p90([abs(s["pres_fit"]["lam"]) for s in segments if abs(s["pres_fit"]["lam"]) > 1e-6]),
         "pres_A":   p90([abs(s["pres_fit"]["A"])   for s in segments if abs(s["pres_fit"]["A"])   > 1e-6]),
+        "wind_L":   p90([abs(s["wind_fit"]["L"])   for s in segments if abs(s["wind_fit"]["L"])   > 1e-6]),
+        "wind_c":   p90([abs(s["wind_fit"]["c"])   for s in segments if abs(s["wind_fit"]["c"])   > 1e-6]),
+        "wind_lam": p90([abs(s["wind_fit"]["lam"]) for s in segments if abs(s["wind_fit"]["lam"]) > 1e-6]),
+        "wind_A":   p90([abs(s["wind_fit"]["A"])   for s in segments if abs(s["wind_fit"]["A"])   > 1e-6]),
     }
 
 
@@ -111,26 +123,36 @@ def segment_to_ode_vector(seg: dict, sc: dict) -> np.ndarray:
     v = np.zeros(ODE_DIM, dtype=np.float32)
     tf = seg["temp_fit"]
     pf = seg["pres_fit"]
+    wf = seg["wind_fit"]
 
-    # Temperature one-hot [0..5]
+    # Temperature [0..10]
     v[TEMP_EQ_IDX[tf["eq_type"]]] = 1.0
-    base = TEMP_EQ_N
-    v[base + 0] = tf["L"]   / sc["temp_L"]
-    v[base + 1] = tf["c"]   / sc["temp_c"]
-    v[base + 2] = tf["lam"] / sc["temp_lam"]
-    v[base + 3] = tf["A"]   / sc["temp_A"]
-    v[base + 4] = tf["B"]   / sc["temp_B"]
+    b = TEMP_EQ_N
+    v[b+0] = tf["L"]   / sc["temp_L"]
+    v[b+1] = tf["c"]   / sc["temp_c"]
+    v[b+2] = tf["lam"] / sc["temp_lam"]
+    v[b+3] = tf["A"]   / sc["temp_A"]
+    v[b+4] = tf["B"]   / sc["temp_B"]
 
-    # Pressure one-hot [11..13]
-    base = TEMP_EQ_N + TEMP_PARAM
-    v[base + PRES_EQ_IDX[pf["eq_type"]]] = 1.0
-    base += PRES_EQ_N
-    v[base + 0] = pf["L"]   / sc["pres_L"]
-    v[base + 1] = pf["c"]   / sc["pres_c"]
-    v[base + 2] = pf["lam"] / sc["pres_lam"]
-    v[base + 3] = pf["A"]   / sc["pres_A"]
+    # Pressure [11..17]
+    b = TEMP_EQ_N + TEMP_PARAM
+    v[b + PRES_EQ_IDX[pf["eq_type"]]] = 1.0
+    b += PRES_EQ_N
+    v[b+0] = pf["L"]   / sc["pres_L"]
+    v[b+1] = pf["c"]   / sc["pres_c"]
+    v[b+2] = pf["lam"] / sc["pres_lam"]
+    v[b+3] = pf["A"]   / sc["pres_A"]
 
-    # Duration
+    # Wind speed [18..24]
+    b = TEMP_EQ_N + TEMP_PARAM + PRES_EQ_N + PRES_PARAM
+    v[b + WIND_EQ_IDX[wf["eq_type"]]] = 1.0
+    b += WIND_EQ_N
+    v[b+0] = wf["L"]   / sc["wind_L"]
+    v[b+1] = wf["c"]   / sc["wind_c"]
+    v[b+2] = wf["lam"] / sc["wind_lam"]
+    v[b+3] = wf["A"]   / sc["wind_A"]
+
+    # Duration [25]
     v[ODE_DIM - 1] = seg["duration_hours"] / 24.0
     return v
 
@@ -142,33 +164,45 @@ def segment_to_full_vector(seg: dict, sc: dict) -> np.ndarray:
     ])
 
 
-def vector_to_fits(v: np.ndarray, sc: dict) -> tuple[TemperatureFit, PressureFit, int]:
+def vector_to_fits(v: np.ndarray, sc: dict) -> tuple[TemperatureFit, PressureFit, WindspeedFit, int]:
     # Temperature
     temp_eq = TEMP_EQ_ORDER[int(np.argmax(v[:TEMP_EQ_N]))]
-    base = TEMP_EQ_N
+    b = TEMP_EQ_N
     temp_fit = TemperatureFit(
         eq_type=temp_eq,
-        L   = float(v[base + 0]) * sc["temp_L"],
-        c   = float(v[base + 1]) * sc["temp_c"],
-        lam = float(max(v[base + 2], 0.0)) * sc["temp_lam"],
-        A   = float(v[base + 3]) * sc["temp_A"],
-        B   = float(v[base + 4]) * sc["temp_B"],
+        L   = float(v[b+0]) * sc["temp_L"],
+        c   = float(v[b+1]) * sc["temp_c"],
+        lam = float(max(v[b+2], 0.0)) * sc["temp_lam"],
+        A   = float(v[b+3]) * sc["temp_A"],
+        B   = float(v[b+4]) * sc["temp_B"],
     )
 
     # Pressure
-    base = TEMP_EQ_N + TEMP_PARAM
-    pres_eq = PRES_EQ_ORDER[int(np.argmax(v[base: base + PRES_EQ_N]))]
-    base += PRES_EQ_N
+    b = TEMP_EQ_N + TEMP_PARAM
+    pres_eq = PRES_EQ_ORDER[int(np.argmax(v[b: b + PRES_EQ_N]))]
+    b += PRES_EQ_N
     pres_fit = PressureFit(
         eq_type=pres_eq,
-        L   = float(v[base + 0]) * sc["pres_L"],
-        c   = float(v[base + 1]) * sc["pres_c"],
-        lam = float(max(v[base + 2], 0.0)) * sc["pres_lam"],
-        A   = float(v[base + 3]) * sc["pres_A"],
+        L   = float(v[b+0]) * sc["pres_L"],
+        c   = float(v[b+1]) * sc["pres_c"],
+        lam = float(max(v[b+2], 0.0)) * sc["pres_lam"],
+        A   = float(v[b+3]) * sc["pres_A"],
+    )
+
+    # Wind
+    b = TEMP_EQ_N + TEMP_PARAM + PRES_EQ_N + PRES_PARAM
+    wind_eq = WIND_EQ_ORDER[int(np.argmax(v[b: b + WIND_EQ_N]))]
+    b += WIND_EQ_N
+    wind_fit = WindspeedFit(
+        eq_type=wind_eq,
+        L   = float(v[b+0]) * sc["wind_L"],
+        c   = float(v[b+1]) * sc["wind_c"],
+        lam = float(max(v[b+2], 0.0)) * sc["wind_lam"],
+        A   = float(v[b+3]) * sc["wind_A"],
     )
 
     dur = max(1, int(round(float(v[ODE_DIM - 1]) * 24)))
-    return temp_fit, pres_fit, dur
+    return temp_fit, pres_fit, wind_fit, dur
 
 
 # ── Historical K ───────────────────────────────────────────────────────────────
@@ -204,7 +238,7 @@ def compute_K_from_history(
             k_obs.append(k)
 
     if not k_obs:
-        return max(1, round(T_hours / 30.0))
+        return max(1, round(T_hours / 8.0))
     return max(1, min(K_MAX, round(float(np.mean(k_obs)))))
 
 
@@ -248,9 +282,9 @@ def build_dataset(ode_vectors: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def train(model, full_vectors, targets, masks, device) -> list[float]:
     model.to(device)
-    X        = torch.tensor(full_vectors, dtype=torch.float32).unsqueeze(0).to(device)
-    targets_t = torch.tensor(targets,     dtype=torch.float32).to(device)
-    masks_t   = torch.tensor(masks,       dtype=torch.bool).to(device)
+    X         = torch.tensor(full_vectors, dtype=torch.float32).unsqueeze(0).to(device)
+    targets_t = torch.tensor(targets,      dtype=torch.float32).to(device)
+    masks_t   = torch.tensor(masks,        dtype=torch.bool).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, EPOCHS)
@@ -290,40 +324,59 @@ def forecast(model, full_vectors, T_hours, query_date, segments, sc, device):
 
 
 def decode_to_series(
-    predicted: list[tuple[TemperatureFit, PressureFit, int]],
-    temp_x0: float,
-    pres_x0: float,
+    predicted: list,
+    temp_x0: float, pres_x0: float, wind_x0: float,
     start_time: pd.Timestamp,
     n_hours: int,
-) -> tuple[pd.Series, pd.Series]:
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     temp_ts, temp_vals = [], []
     pres_ts, pres_vals = [], []
-    current_time  = start_time
-    cur_temp_x0   = temp_x0
-    cur_pres_x0   = pres_x0
+    wind_ts, wind_vals = [], []
+    current_time = start_time
+    cur_temp = temp_x0
+    cur_pres = pres_x0
+    cur_wind = wind_x0
 
-    for tf, pf, dur in predicted:
-        temp_shift = cur_temp_x0 - temp_predict(tf, 0.0)
-        pres_shift = cur_pres_x0 - pres_predict(pf, 0.0)
+    for tf, pf, wf, dur in predicted:
+        temp_shift = cur_temp - temp_predict(tf, 0.0)
+        pres_shift = cur_pres - pres_predict(pf, 0.0)
+        wind_shift = cur_wind - wind_predict(wf, 0.0)
 
         for step in range(dur):
             if len(temp_ts) >= n_hours:
                 break
             ts = current_time + pd.Timedelta(hours=step)
-            temp_ts.append(ts);   temp_vals.append(temp_predict(tf, float(step)) + temp_shift)
-            pres_ts.append(ts);   pres_vals.append(pres_predict(pf, float(step)) + pres_shift)
+            temp_ts.append(ts); temp_vals.append(temp_predict(tf, float(step)) + temp_shift)
+            pres_ts.append(ts); pres_vals.append(pres_predict(pf, float(step)) + pres_shift)
+            wind_ts.append(ts); wind_vals.append(max(0.0, wind_predict(wf, float(step)) + wind_shift))
 
         if len(temp_ts) >= n_hours:
             break
-        cur_temp_x0   = temp_predict(tf, float(dur - 1)) + temp_shift
-        cur_pres_x0   = pres_predict(pf, float(dur - 1)) + pres_shift
+        cur_temp = temp_predict(tf, float(dur - 1)) + temp_shift
+        cur_pres = pres_predict(pf, float(dur - 1)) + pres_shift
+        cur_wind = max(0.0, wind_predict(wf, float(dur - 1)) + wind_shift)
         current_time += pd.Timedelta(hours=dur)
 
     idx = pd.DatetimeIndex(temp_ts)
     return (
         pd.Series(temp_vals, index=idx),
         pd.Series(pres_vals, index=idx),
+        pd.Series(wind_vals, index=idx),
     )
+
+
+# ── Eval helper ────────────────────────────────────────────────────────────────
+
+def _mae_rmse(actual: pd.Series, pred: pd.Series) -> tuple[float, float]:
+    errs = []
+    for ts in pred.index:
+        act = float(actual.get(ts, float("nan")))
+        if math.isfinite(act):
+            errs.append(act - float(pred.loc[ts]))
+    if not errs:
+        return float("nan"), float("nan")
+    a = np.array(errs)
+    return float(np.mean(np.abs(a))), float(np.sqrt(np.mean(a ** 2)))
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -356,57 +409,42 @@ def main():
                 time.perf_counter() - t0, losses[-1])
     torch.save(model.state_dict(), MODEL_PATH)
 
-    # ── Load actuals for Feb 2026 ──
+    # ── Load actuals ──
     df = pd.read_csv("hly4935_subset.csv", skiprows=23)
     df["date"] = pd.to_datetime(df["date"], dayfirst=True)
     df = df.set_index("date").sort_index()
-    actual_temp = df["temp"]
-    actual_pres = df["msl"]
 
     last_seg = segments[-1]
     temp_x0  = float(last_seg["temp_x0"])
     pres_x0  = float(last_seg["pres_x0"])
+    wind_x0  = float(last_seg["wind_x0"])
     feb1     = pd.Timestamp("2026-02-01 00:00")
 
     for T, label in [(24, "24h"), (168, "168h")]:
         logger.info("=== FORECAST: Feb 1 2026, T=%s ===", label)
         predicted, K = forecast(model, full_vectors, T, feb1, segments, sc, device)
+        pred_temp, pred_pres, pred_wind = decode_to_series(
+            predicted, temp_x0, pres_x0, wind_x0, feb1, T
+        )
 
-        pred_temp, pred_pres = decode_to_series(predicted, temp_x0, pres_x0, feb1, T)
-
-        # Temperature errors
-        temp_errs = []
-        for ts in pred_temp.index:
-            act = float(actual_temp.get(ts, float("nan")))
-            if not math.isnan(act):
-                temp_errs.append(act - float(pred_temp.loc[ts]))
-
-        # Pressure errors
-        pres_errs = []
-        for ts in pred_pres.index:
-            act = float(actual_pres.get(ts, float("nan")))
-            if not math.isnan(act):
-                pres_errs.append(act - float(pred_pres.loc[ts]))
+        mae_t, rmse_t = _mae_rmse(df["temp"], pred_temp)
+        mae_p, rmse_p = _mae_rmse(df["msl"],  pred_pres)
+        mae_w, rmse_w = _mae_rmse(df["wdsp"], pred_wind)
 
         if T == 24:
-            logger.info("%-22s  %8s  %8s  %6s  |  %8s  %8s  %6s",
-                        "timestamp", "act_T", "pred_T", "err_T",
-                        "act_P", "pred_P", "err_P")
-            for ts, te, pe in zip(pred_temp.index, temp_errs, pres_errs):
-                logger.info("  %s  %8.1f  %8.1f  %+.2f  |  %8.1f  %8.1f  %+.2f",
-                            ts,
-                            float(actual_temp.get(ts, float("nan"))),
-                            float(pred_temp.loc[ts]), te,
-                            float(actual_pres.get(ts, float("nan"))),
-                            float(pred_pres.loc[ts]), pe)
+            logger.info("%-20s  %6s %6s %6s  |  %7s %7s  |  %6s %6s",
+                        "timestamp", "aT", "pT", "eT", "aP", "pP", "aW", "pW")
+            for ts in pred_temp.index:
+                at = float(df["temp"].get(ts, float("nan")))
+                ap = float(df["msl"].get(ts,  float("nan")))
+                aw = float(df["wdsp"].get(ts, float("nan")))
+                logger.info("  %s  %6.1f %6.1f %+.2f  |  %7.1f %7.1f  |  %6.1f %6.1f",
+                            ts, at, float(pred_temp.loc[ts]), at - float(pred_temp.loc[ts]),
+                            ap, float(pred_pres.loc[ts]),
+                            aw, float(pred_wind.loc[ts]))
 
-        mae_t  = float(np.mean(np.abs(temp_errs))) if temp_errs else float("nan")
-        rmse_t = float(np.sqrt(np.mean(np.array(temp_errs) ** 2))) if temp_errs else float("nan")
-        mae_p  = float(np.mean(np.abs(pres_errs))) if pres_errs else float("nan")
-        rmse_p = float(np.sqrt(np.mean(np.array(pres_errs) ** 2))) if pres_errs else float("nan")
-
-        logger.info("T=%s  K=%d  temp MAE=%.3f°C RMSE=%.3f°C  |  pres MAE=%.3f hPa RMSE=%.3f hPa",
-                    label, K, mae_t, rmse_t, mae_p, rmse_p)
+        logger.info("T=%s K=%d | temp MAE=%.3f°C RMSE=%.3f°C | pres MAE=%.3f hPa RMSE=%.3f hPa | wind MAE=%.3f kt RMSE=%.3f kt",
+                    label, K, mae_t, rmse_t, mae_p, rmse_p, mae_w, rmse_w)
 
     Path("artifacts/joint_two_pass_report.json").write_text(
         json.dumps({"n_segments": len(segments), "final_loss": round(float(losses[-1]), 4)},

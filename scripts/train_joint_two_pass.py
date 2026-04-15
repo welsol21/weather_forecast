@@ -57,16 +57,11 @@ SEGMENTS_PATH = Path("segments/joint_segments.json")
 # paths set after args parsed — see main()
 MODEL_PATH: Path = Path("artifacts/joint_two_pass.pt")
 
-# ── Window config (set via --window CLI arg) ───────────────────────────────────
-parser = argparse.ArgumentParser()
-parser.add_argument("--window-hours", type=int, default=None,
-                    help="Half-window in hours (overrides --window-days)")
-parser.add_argument("--window-days", type=int, default=45,
-                    help="Half-window in days (tail=N days back, head=N days forward)")
-_args, _ = parser.parse_known_args()
-
-HALF_WINDOW_H    = _args.window_hours if _args.window_hours is not None else _args.window_days * 24
-HALF_WINDOW_DAYS = HALF_WINDOW_H / 24  # may be fractional
+# ── Window config ─────────────────────────────────────────────────────────────
+# Defaults used when this module is imported (e.g. by forecast_february.py).
+# Overridden by _parse_args() when run as __main__.
+HALF_WINDOW_H    = 45 * 24   # 1080 h  (45-day default)
+HALF_WINDOW_DAYS = 45.0
 MAX_SEQ_LEN      = 256
 CENTER_STEP_H    = 1
 
@@ -400,7 +395,18 @@ def _mae_rmse(actual: pd.Series, pred: pd.Series) -> tuple[float, float]:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    global MODEL_PATH
+    global MODEL_PATH, HALF_WINDOW_H, HALF_WINDOW_DAYS
+
+    # Parse CLI args only when running as a script
+    _parser = argparse.ArgumentParser()
+    _parser.add_argument("--window-hours", type=int, default=None,
+                         help="Half-window in hours (overrides --window-days)")
+    _parser.add_argument("--window-days", type=int, default=45,
+                         help="Half-window in days (tail=N days back, head=N days forward)")
+    _args, _ = _parser.parse_known_args()
+    HALF_WINDOW_H    = _args.window_hours if _args.window_hours is not None else _args.window_days * 24
+    HALF_WINDOW_DAYS = HALF_WINDOW_H / 24
+
     Path("artifacts").mkdir(exist_ok=True)
 
     MODEL_PATH = Path(f"artifacts/joint_two_pass_w{HALF_WINDOW_H}h.pt")

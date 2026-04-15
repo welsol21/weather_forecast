@@ -1,120 +1,176 @@
-# Weather Patterns MVP
+# ODE-Segment Sequence Forecasting
 
-Docker-first MVP for the pattern-first weather forecasting approach described in `TZ.docx`.
+**Learning Weather Pattern Grammar from Single-Station Observations**
 
-## Documentation
+> A transformer-based approach to single-station deterministic weather forecasting
+> via walk-forward analytical segmentation and symmetric-window sequence modelling.
 
-- `TZ.docx`: source concept and mathematical direction.
-- `prompt.txt`: implementation-oriented MVP scope.
-- `docs/project_formulation.md`: consolidated project formulation that develops the ideas from `TZ.docx` and `prompt.txt`, including the sequence-pattern inference target.
+**Authors:** Vladyslav Rastvorov (Final Year Student) · Dr. Nasir Ahmad (Supervisor)  
+**Institution:** Munster Technological University, Department of Computer Science  
+**Repository:** [github.com/welsol21/weather_forecast](https://github.com/welsol21/weather_forecast)
 
-## Run with Docker
+---
 
-```bash
-docker compose up --build
+## Abstract
+
+Raw hourly weather observations are compressed into sequences of analytical ODE segments —
+each segment described by an equation type and its fitted parameters. A transformer encoder
+is then trained to predict the future sequence of segments from a symmetric window of
+historical ones. Unlike NWP-based methods, the approach uses no atmospheric physics or
+spatial information; unlike standard time-series models, it operates on an interpretable,
+compressed representation rather than raw sensor values.
+
+On a 7-day evaluation period (February 2026, Knock Airport, Ireland), the ensemble achieves:
+
+| Horizon | Temperature MAE | Pressure MAE | Wind MAE |
+|---------|----------------|--------------|----------|
+| h 1–12  | 1.42°C         | **0.89 hPa** | 2.48 kt  |
+| h 13–24 | 2.31°C         | 3.74 hPa     | 1.67 kt  |
+| h 25–168 (days 2–7) | 1.79°C | 7.04 hPa | 6.22 kt |
+| **Overall (168h)** | **1.80°C** | **6.37 hPa** | **5.62 kt** |
+
+Pressure at 12 h beats naive persistence by **34%** (0.89 vs 1.35 hPa).
+
+---
+
+## Key Idea
+
+Instead of predicting raw time-series values, we predict the **sequence of analytical
+equations** that describe upcoming weather. A "rising pressure" event becomes an
+exponential-decay segment with fitted rate and amplitude; a diurnal temperature cycle
+becomes a harmonic segment. The transformer learns the grammar of how these patterns
+follow one another.
+
+```
+Raw observations
+       │
+       ▼
+ODE Segmentation (per channel)
+  temp:  6 equation types (harmonic, linear-harmonic, damped-harmonic,
+                           exponential, linear, constant)
+  pres:  3 equation types (exponential, linear, constant)
+  wind:  3 equation types (exponential, linear, constant)
+       │
+       ▼
+Joint boundary unification  →  10,055 segments over 6 years (mean 5.3h)
+       │
+       ▼
+Transformer Encoder
+  Input:  tail window of segment vectors (right-aligned, zero-padded to 256)
+  Output: head window of segment vectors (future 256 positions)
+       │
+       ▼
+ODE decoding  →  hourly forecast
 ```
 
-## Run locally
+---
 
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
-python -m weather_patterns prepare-pattern-windows --csv hly4935_subset.csv --output-dir artifacts/prepare
-python -m weather_patterns discover-patterns --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl.gz --output-dir artifacts/discovery
-python -m weather_patterns train-sequence-model --sequence-dataset-path artifacts/discovery/forecast_sequence_dataset.jsonl.gz --checkpoint-path artifacts/sequence_predictor.pt
+## Results vs Baselines
+
+| Method | T MAE @24h | T MAE @168h | P MAE @12h | P MAE @168h |
+|--------|-----------|-------------|-----------|-------------|
+| Persistence | 1.47°C | 1.14°C | 1.35 hPa | 8.00 hPa |
+| Climatology | 1.71°C | 1.81°C | 17.4 hPa | 28.1 hPa |
+| **Ours (Ensemble)** | **1.42°C** | **1.79°C** | **0.89 hPa** | **7.04 hPa** |
+| ECMWF-IFS (lit.) | ~1.2°C | ~2.5°C | ~1.0 hPa | ~6.0 hPa |
+
+---
+
+## Window-Size Ablation
+
+The optimal training window approximately equals the target forecast horizon,
+motivating an ensemble of models:
+
+| Window | T MAE @24h | T MAE @168h | Used for |
+|--------|-----------|-------------|----------|
+| 12h | 3.58°C | 4.29°C | **h 1–12** (best pressure at 0.89 hPa) |
+| 15d | 1.89°C | **1.80°C** | **h 25–168** |
+| 45d | **1.99°C** | 1.78°C | **h 13–24** |
+
+---
+
+## Repository Structure
+
+```
+weather_forecast/
+├── src/weather_patterns/
+│   └── pattern/
+│       ├── segmentation_temperature.py   # 6 equation types, tolerance 1°C
+│       ├── segmentation_pressure.py      # 3 equation types, tolerance 1 hPa
+│       └── segmentation_windspeed.py     # 3 equation types, tolerance 2 kt
+├── scripts/
+│   ├── run_joint_segmentation.py         # Build joint_segments.json
+│   ├── train_joint_two_pass.py           # Train transformer (--window-days N)
+│   └── forecast_february.py             # Ensemble inference + HTML report
+├── segments/
+│   ├── temperature_segments.json         # 1,707 segments
+│   ├── pressure_segments.json            # 1,798 segments
+│   ├── windspeed_segments.json           # 1,951 segments
+│   └── joint_segments.json              # 10,055 joint segments
+├── artifacts/                            # symlink → /mnt/ml/ (model checkpoints)
+│   ├── joint_two_pass_w12h.pt
+│   ├── joint_two_pass_w15d.pt
+│   ├── joint_two_pass.pt                 # 45d model (legacy name)
+│   ├── february_forecast_report.html     # Interactive forecast report
+│   └── technical_report.html            # Full technical report (paper draft)
+├── docs/
+│   ├── project_journey.md               # Development history and process notes
+│   ├── TZ.docx                          # Original project specification
+│   ├── project_formulation.md
+│   └── theory_and_runs.md
+└── hly4935_subset.csv                   # Met Éireann HLY station 4935
 ```
 
-If you prefer not to install the package in editable mode during local development, you can run the commands with `PYTHONPATH=src`.
+---
 
-`run-pipeline` still exists as a legacy single-command path, but the intended workflow is now split into `prepare-pattern-windows` and `discover-patterns`.
-
-When you are running in a sandbox or on a machine without CUDA, add `--allow-cpu-model`. This switches discovery to the CPU-safe `kmeans` backend and allows the sequence model to run on CPU instead of terminating early on missing CUDA support.
-
-## CUDA-Preferred Discovery And Model Commands
-
-These commands are intended for environments with CUDA-enabled PyTorch. The repository does not pin `torch` in the base requirements because the exact wheel depends on the target CUDA stack.
+## Quick Start
 
 ```bash
-python -m weather_patterns discover-patterns --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl.gz --output-dir artifacts/discovery
-python -m weather_patterns train-sequence-model --sequence-dataset-path artifacts/discovery/forecast_sequence_dataset.jsonl.gz --checkpoint-path artifacts/sequence_predictor.pt
-python -m weather_patterns predict-sequence --csv hly4935_subset.csv --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl.gz --pattern-prototypes-path artifacts/discovery/pattern_prototypes.jsonl --checkpoint-path artifacts/sequence_predictor.pt
-python -m weather_patterns evaluate-sequence-model --csv hly4935_subset.csv --prepared-pattern-windows-path artifacts/prepare/prepared_pattern_windows.jsonl.gz --pattern-prototypes-path artifacts/discovery/pattern_prototypes.jsonl --sequence-dataset-path artifacts/discovery/forecast_sequence_dataset.jsonl.gz --output-path artifacts/sequence_evaluation.json
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt && pip install -e .
 ```
 
-For a single staged run that still preserves the split artifacts on disk:
-
+**Step 1 — Build joint segments** (requires pre-built per-channel JSONs):
 ```bash
-python -m weather_patterns run-split-workflow --csv hly4935_subset.csv --output-dir artifacts
+python scripts/run_joint_segmentation.py
 ```
 
-This staged run writes separate subdirectories for:
-- `prepare/`
-- `discovery/`
-- `model/`
-- `plots/`
+**Step 2 — Train a model** (GPU recommended, ~2h per run):
+```bash
+python scripts/train_joint_two_pass.py --window-days 15
+python scripts/train_joint_two_pass.py --window-days 45
+python scripts/train_joint_two_pass.py --window-hours 12
+```
 
-`discover-patterns`, `train-sequence-model`, `predict-sequence`, and `evaluate-sequence-model` should be treated as CUDA stages in the target workflow. For local debugging without CUDA, use `--allow-cpu-model`.
+**Step 3 — Generate forecast report**:
+```bash
+python scripts/forecast_february.py
+# Opens: artifacts/february_forecast_report.html
+```
 
-`predict-sequence` and `evaluate-sequence-model` print compact JSON summaries by default. Add `--full-stdout` when you want the full JSON payload in the terminal as well.
+Artifacts (model checkpoints) are stored outside the repo on `/mnt/ml/` and
+exposed via the `artifacts/` symlink. See `docs/project_journey.md` for
+storage setup details.
 
-`train-sequence-model` also accepts `--output-path` for saving the training summary JSON alongside the checkpoint metadata in stdout.
+---
 
-`predict-sequence` also accepts `--output-path` for saving the full prediction summary JSON without forcing the full payload into stdout.
+## Future Work
 
-`predict-sequence` can consume saved discovery artifacts via `--prepared-pattern-windows-path` and `--pattern-prototypes-path`. `evaluate-sequence-model` can consume the same discovery artifacts plus `--sequence-dataset-path`.
+- Extended evaluation: 90-day rolling test period across all seasons
+- Multi-station generalisation (Shannon, Dublin Airport, Valentia)
+- Wind vector decomposition: replace scalar speed with (u, v) components
+- Relative humidity as a fourth channel
+- Formal ECMWF baseline on identical dates
+- Probabilistic forecasting over segment sequences
 
-## What the pipeline does
+---
 
-1. Loads and cleans the hourly weather CSV.
-2. Maps source columns into placeholder channels.
-3. Smooths the signals and computes first/second differences.
-4. Detects extrema and peaks.
-5. Builds extrema windows and pattern representations.
-6. Runs a baseline pattern discovery stage.
-7. Builds supervised forecast samples for future pattern sequence prediction.
+## Technical Report
 
-## Prepare Artifacts
+A full paper-style technical report (methodology, results, baseline comparison,
+proposed research agenda) is available at
+[`artifacts/technical_report.html`](artifacts/technical_report.html).
 
-`prepare-pattern-windows` writes the CPU-side preparation bundle:
+---
 
-- `prepare_summary.json`
-- `signal_frame.csv`
-- `extrema_events.csv`
-- `peak_events.csv`
-- `prepared_pattern_windows.jsonl.gz`
-
-## Discovery Artifacts
-
-`discover-patterns` writes the GPU-side discovery bundle:
-
-- `discovery_summary.json`
-- `pattern_prototypes.jsonl`
-- `pattern_flow.jsonl`
-- `forecast_sequence_dataset.jsonl.gz`
-
-## Storage Hygiene
-
-Full runs generate large on-disk artifacts. The heavy sequence bundles are now written as gzip-compressed JSONL by default, but they are still large enough to matter operationally.
-
-- `prepared_pattern_windows.jsonl.gz` can still grow into multi-GB range
-- `forecast_sequence_dataset.jsonl.gz` can still grow into multi-GB range
-
-For operational runs, prefer placing `artifacts/` on a large secondary disk such as `/mnt/ml` and exposing it back into the repo via a symlink if needed.
-
-Also keep Docker storage under control before long runs:
-
-- remove unused images
-- remove stopped containers
-- remove obsolete build cache
-
-This is an operational requirement, not just housekeeping: large artifact writes plus stale Docker layers noticeably increase the risk of host instability during long runs.
-
-## Runtime Note
-
-Signal processing, event extraction, and pattern window construction belong to the preparation stage.
-
-Pattern discovery and all later model stages must be treated as GPU-only. The project config now encodes this requirement through `PipelineConfig.compute`, and CUDA availability is validated through `weather_patterns.forecasting.runtime.resolve_model_device`.
-
-The repository now also contains a GPU-only `torch` sequence predictor skeleton that consumes sequence-shaped forecast samples and predicts a future pattern matrix. It is intentionally isolated from the CPU preprocessing pipeline and requires CUDA-aware PyTorch at runtime.
+*Munster Technological University · Department of Computer Science · Final Year Project 2026*

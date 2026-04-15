@@ -10,3 +10,5 @@ artifacts_docker/
 *.pyd
 .codex/
 .codex
+src/*.egg-info/
+*.egg-info/

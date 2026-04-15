@@ -216,6 +216,48 @@ Clustering method: **k-medoids** on the pairwise distance matrix.
 
 ---
 
+## Temperature Channel Prototype — Two-Pass Sequence Model
+
+### Context
+
+Before applying the full 9-channel pipeline, the temperature channel is used as a prototype to develop and validate the sequence forecasting approach. Five years of hourly temperature data (2020–2026-01-31) are segmented into equation-based patterns using the walk-forward algorithm from Run 8. This produces 1707 segments with a mean duration of ~30 hours. February 2026 is held out for evaluation.
+
+### Why a prototype
+
+The full 9-channel pipeline has a compound complexity: segmentation, cross-channel boundary union, clustering, and sequence prediction all interact. Working on a single channel isolates the forecasting problem: given a history of equation-based patterns, predict future patterns correctly.
+
+### Experiments
+
+| Approach | MAE (Feb 1, first 24h) | Notes |
+|----------|----------------------|-------|
+| GRU, history=14 segments, autoregressive | 3.92°C (full Feb) | Autoregressive: one segment predicted at a time, history window of 14 |
+| Transformer, full history, autoregressive | 13.5°C (full Feb) | Full 1707-segment context; error accumulates over 21+ autoregressive steps |
+| Transformer, direct 24h value prediction | 1.55°C | Bypasses segment parameters; predicts hourly values directly — not the right direction |
+
+### The right direction: two-pass architecture
+
+The goal is to predict **sequences of equation-based patterns**, not raw values. Predicting patterns preserves the physical meaning of the representation and allows arbitrary-horizon forecasting by chaining pattern solutions analytically.
+
+The failure mode of the autoregressive Transformer (MAE 13.5°C) is not a fundamental flaw of pattern-based prediction — it is a consequence of generating one segment at a time and feeding each predicted segment back as input. Error accumulates with each step.
+
+**Two-pass architecture**:
+
+- **Pass 1 — Length**: given the full history of segments (5 years of context, including seasonal patterns) and a desired time interval T, predict K — how many segments will occur in that interval. Seasonality matters: segment duration is not uniform across the year (winter vs. summer dynamics differ).
+
+- **Pass 2 — Content**: given the full history + T + K, predict the K segment vectors (equation type + coefficients). Again, seasonality is fully present in the history context.
+
+Both passes use the same encoder (full 5-year segment history with temporal features). Only the query/head differs.
+
+Inference for any horizon T:
+1. Pass 1 → K
+2. Pass 2 → [seg_1, ..., seg_K] (equation parameters)
+3. Decode: chain segment solutions analytically, x₀ of each segment = end value of previous
+4. Return the first T hours of the decoded series
+
+This avoids autoregressive error accumulation: both passes are single forward passes over the fixed historical context.
+
+---
+
 ## Process of Discovery — Summary
 
 ```

@@ -14,6 +14,7 @@ Output: artifacts/joint_two_pass.pt
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import math
@@ -53,13 +54,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SEGMENTS_PATH = Path("segments/joint_segments.json")
-MODEL_PATH    = Path("artifacts/joint_two_pass.pt")
+# paths set after args parsed — see main()
+MODEL_PATH: Path = Path("artifacts/joint_two_pass.pt")
 
-# ── Window config (change this to experiment with different horizons) ──────────
-HALF_WINDOW_DAYS = 45          # tail = 45 days back, head = 45 days forward
-HALF_WINDOW_H    = HALF_WINDOW_DAYS * 24   # 1080 hours
-MAX_SEQ_LEN      = 256         # pad tail and head to this length
-CENTER_STEP_H    = 1           # shift center by 1 hour per training sample
+# ── Window config (set via --window CLI arg) ───────────────────────────────────
+parser = argparse.ArgumentParser()
+parser.add_argument("--window-hours", type=int, default=None,
+                    help="Half-window in hours (overrides --window-days)")
+parser.add_argument("--window-days", type=int, default=45,
+                    help="Half-window in days (tail=N days back, head=N days forward)")
+_args, _ = parser.parse_known_args()
+
+HALF_WINDOW_H    = _args.window_hours if _args.window_hours is not None else _args.window_days * 24
+HALF_WINDOW_DAYS = HALF_WINDOW_H / 24  # may be fractional
+MAX_SEQ_LEN      = 256
+CENTER_STEP_H    = 1
 
 # ── Feature dimensions ─────────────────────────────────────────────────────────
 TEMP_EQ_N  = len(TEMP_EQ_ORDER)   # 6
@@ -200,7 +209,7 @@ def build_dataset(segments: list[dict], sc: dict) -> tuple[np.ndarray, np.ndarra
     centers = pd.date_range(center_start, center_end, freq=f"{CENTER_STEP_H}h")
     n = len(centers)
     logger.info("Building dataset: %d centers  half_window=%dd  max_seq=%d",
-                n, HALF_WINDOW_DAYS, MAX_SEQ_LEN)
+                n, HALF_WINDOW_H, MAX_SEQ_LEN)
 
     tail_seqs  = np.zeros((n, MAX_SEQ_LEN, FEAT_DIM), dtype=np.float32)
     head_seqs  = np.zeros((n, MAX_SEQ_LEN, FEAT_DIM), dtype=np.float32)
@@ -391,9 +400,21 @@ def _mae_rmse(actual: pd.Series, pred: pd.Series) -> tuple[float, float]:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
+    global MODEL_PATH
     Path("artifacts").mkdir(exist_ok=True)
+
+    MODEL_PATH = Path(f"artifacts/joint_two_pass_w{HALF_WINDOW_H}h.pt")
+    log_path   = Path(f"artifacts/joint_two_pass_w{HALF_WINDOW_H}h.log")
+
+    # add file handler for this window size
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s",
+                                      datefmt="%Y-%m-%d %H:%M:%S"))
+    logger.addHandler(fh)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info("device=%s  half_window=%dd  max_seq=%d", device, HALF_WINDOW_DAYS, MAX_SEQ_LEN)
+    logger.info("device=%s  half_window=%dh (%.1fd)  max_seq=%d",
+                device, HALF_WINDOW_H, HALF_WINDOW_DAYS, MAX_SEQ_LEN)
 
     segments = json.loads(SEGMENTS_PATH.read_text(encoding="utf-8"))
     logger.info("Loaded %d joint segments", len(segments))
@@ -427,7 +448,7 @@ def main():
     pres_x0 = float(last_known["msl"])
     wind_x0 = float(last_known["wdsp"])
 
-    for T, label in [(24, "24h"), (168, "168h"), (HALF_WINDOW_H, f"{HALF_WINDOW_DAYS}d")]:
+    for T, label in [(24, "24h"), (168, "168h"), (HALF_WINDOW_H, f"{HALF_WINDOW_H}h")]:
         predicted = forecast(model, segments, sc, feb1, device)
         pred_temp, pred_pres, pred_wind = decode_to_series(
             predicted, temp_x0, pres_x0, wind_x0, feb1, T
@@ -438,8 +459,10 @@ def main():
         logger.info("T=%-6s | temp MAE=%.3f°C RMSE=%.3f°C | pres MAE=%.3f hPa RMSE=%.3f hPa | wind MAE=%.3f kt RMSE=%.3f kt",
                     label, mae_t, rmse_t, mae_p, rmse_p, mae_w, rmse_w)
 
-    Path("artifacts/joint_two_pass_report.json").write_text(
-        json.dumps({"n_segments": len(segments), "half_window_days": HALF_WINDOW_DAYS,
+    Path(f"artifacts/joint_two_pass_w{HALF_WINDOW_H}h_report.json").write_text(
+        json.dumps({"n_segments": len(segments),
+                    "half_window_hours": HALF_WINDOW_H,
+                    "half_window_days": HALF_WINDOW_DAYS,
                     "final_loss": round(float(losses[-1]), 4)}, indent=2), encoding="utf-8"
     )
 

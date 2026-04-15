@@ -240,21 +240,70 @@ The goal is to predict **sequences of equation-based patterns**, not raw values.
 
 The failure mode of the autoregressive Transformer (MAE 13.5°C) is not a fundamental flaw of pattern-based prediction — it is a consequence of generating one segment at a time and feeding each predicted segment back as input. Error accumulates with each step.
 
-**Two-pass architecture**:
+**Two-pass architecture (K from history)**:
 
-- **Pass 1 — Length**: given the full history of segments (5 years of context, including seasonal patterns) and a desired time interval T, predict K — how many segments will occur in that interval. Seasonality matters: segment duration is not uniform across the year (winter vs. summer dynamics differ).
+- **K — Length**: for a given query date and forecast horizon T, look at all historical instances of the same day-of-year (±7 days) across all training years. For each historical year, count how many segments it takes to cover T hours starting from that date. Average across years → K. This is a seasonal constant derived analytically, not predicted by the model.
 
-- **Pass 2 — Content**: given the full history + T + K, predict the K segment vectors (equation type + coefficients). Again, seasonality is fully present in the history context.
-
-Both passes use the same encoder (full 5-year segment history with temporal features). Only the query/head differs.
+- **Single forward pass — Content**: the encoder sees the full 5-year history of segments with temporal features (sin/cos day-of-year, sin/cos hour-of-day). The head outputs K_MAX segment vectors (equation type + coefficients + normalised duration) in one shot. At inference, take the first K.
 
 Inference for any horizon T:
-1. Pass 1 → K
-2. Pass 2 → [seg_1, ..., seg_K] (equation parameters)
+1. Compute K from historical data (seasonal lookup)
+2. Single encoder pass → [seg_1, ..., seg_K] (equation parameters + durations)
 3. Decode: chain segment solutions analytically, x₀ of each segment = end value of previous
 4. Return the first T hours of the decoded series
 
-This avoids autoregressive error accumulation: both passes are single forward passes over the fixed historical context.
+This avoids autoregressive error accumulation entirely.
+
+### Temperature channel results (two-pass, Feb 1 2026)
+
+| Horizon | K | MAE | RMSE |
+|---------|---|-----|------|
+| T=24h   | 1 | 1.56°C | — |
+| T=168h  | 5 | 1.23°C | — |
+
+Segmentation: 1707 segments, mean 30.0h, RMS 0.54°C. Equation mix: ~60% exponential, ~35% linear, ~5% constant.
+
+---
+
+## Pressure Channel — Two-Pass Sequence Model
+
+### Equation set
+
+Pressure (sea-level, hPa) follows synoptic-scale dynamics with timescales of 1–7 days:
+
+- **Exponential**: x(t) = L + A·e^(−λt) — approach to equilibrium (passing fronts)
+- **Linear**: x(t) = L + c·t — steady rising/falling trend (sustained pressure gradient)
+- **Constant**: x(t) = L — blocking pattern, stable high/low
+
+Quadratic was removed: x(t) = L + c·t + a·t² is unbounded beyond segment duration → catastrophic decoding errors (predicted L=800 hPa, MAE 85 hPa). Pressure dynamics do not accelerate without bound; the exponential equation already captures approach-to-equilibrium curvature.
+
+No solar harmonic (24h cycle) unlike temperature — synoptic pressure variations are not diurnally locked.
+
+### Segmentation results
+
+Data: 2020-01-01 to 2026-01-31, 52,713 hourly observations.  
+Tolerance: 1 hPa. Initial window: 24h. Walk-forward algorithm identical to temperature.
+
+| Metric | Value |
+|--------|-------|
+| Total segments | 1798 |
+| Mean duration | 29.7h |
+| Min / Max duration | 9h / 81h |
+| Overall RMS | 0.883 hPa |
+| Exponential | 895 (49.8%) mean 30.3h |
+| Linear | 903 (50.2%) mean 29.1h |
+| Constant | 0 (0%) — 1 hPa tolerance eliminates it |
+
+Note: constant (flat) wins rarely against 1 hPa tolerance — real pressure is almost always trending or relaxing. Near-equal split exponential/linear reflects alternating front passage (exponential) and gradient phases (linear).
+
+### Model results (two-pass, Feb 1 2026)
+
+| Horizon | K | MAE | RMSE |
+|---------|---|-----|------|
+| T=24h   | 1 | 3.89 hPa | 4.17 hPa |
+| T=168h  | 6 | 7.06 hPa | 8.25 hPa |
+
+Training: 600 epochs, final loss 0.164 (plateau from 0.167 — limited discriminability in normalised ODE space). The model predicts physically plausible parameters (L≈998 hPa, exponential with λ=0.086) but lacks fine-grained calibration. Next step: combine temperature + pressure into joint multi-channel forecaster where cross-channel dynamics improve calibration.
 
 ---
 

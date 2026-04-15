@@ -337,3 +337,47 @@ Run 8: proper differential equations (exponential, oscillatory with complex root
 ```
 
 The journey reflects a deepening from statistical summarisation → scale-free dynamics → full differential equation representation with mathematically determined boundaries. The key shift: we find patterns, we do not cut them.
+
+---
+
+## Joint Two-Channel Forecaster (Temperature + Pressure)
+
+### Algorithm
+
+**Step 1 — Load (no recomputation)**  
+Read `segments/temperature_segments.json` (1707 segments) and `segments/pressure_segments.json` (1798 segments). Both are committed to the repo.
+
+**Step 2 — Union of boundaries**  
+Collect all timestamps from both files:
+```
+temp_starts ∪ temp_ends ∪ pres_starts ∪ pres_ends → sort → deduplicate
+```
+This gives a unified time grid. Note: within a single channel `end_time[i]` and `start_time[i+1]` differ by 1 hour due to segmentation indexing (`end_index = boundary − 1`, next `seg_start = boundary`), so both must be included.
+
+**Step 3 — Refit per channel in each joint segment**  
+For each interval `[tᵢ, tᵢ₊₁]` in the union grid, slice the raw CSV and run `_best_fit` independently for temperature and for pressure. Each interval gets its own equation type and coefficients per channel.
+
+**Step 4 — Save joint segments**  
+Output: `segments/joint_segments.json`. Each record:
+```json
+{
+  "start_time": "2020-01-01 00:00",
+  "duration_hours": 18,
+  "temp_fit": { "eq_type": "linear", "L": 8.2, "c": -0.03, "lam": 0.0, "A": 0.0 },
+  "pres_fit": { "eq_type": "exponential", "L": 1001.4, "A": -4.1, "lam": 0.08, "c": 0.0 }
+}
+```
+`end_time` is not stored — it is `start_time + duration_hours` and reconstructed at decode time.
+
+**Step 5 — Forecaster**  
+A causal Transformer sees the full history of ~3000+ joint patterns (one vector per pattern). Each input vector:
+```
+[temp_onehot(4), temp_L, temp_c, temp_lam, temp_A,
+ pres_onehot(3), pres_L, pres_c, pres_lam, pres_A,
+ duration/24,
+ sin/cos day-of-year, sin/cos hour-of-day]
+```
+K is derived from history (same `compute_K_from_history` lookup: how many joint patterns historically covered horizon T on this day-of-year). The model outputs K_MAX pattern vectors in a single forward pass; at inference the first K are used.
+
+**Step 6 — Decode**  
+For each predicted pattern, apply the temperature equation and the pressure equation in parallel over `duration_hours` steps. Chain segments: `x₀` of each segment = last value of the previous. Returns two time series simultaneously.

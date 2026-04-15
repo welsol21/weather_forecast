@@ -369,15 +369,31 @@ Output: `segments/joint_segments.json`. Each record:
 ```
 `end_time` is not stored — it is `start_time + duration_hours` and reconstructed at decode time.
 
-**Step 5 — Forecaster**  
-A causal Transformer sees the full history of ~3000+ joint patterns (one vector per pattern). Each input vector:
+**Step 5 — Forecaster: symmetric 90-day window**
+
+The forecast point is treated as the **centre** of a 90-day sequence:
 ```
-[temp_onehot(4), temp_L, temp_c, temp_lam, temp_A,
- pres_onehot(3), pres_L, pres_c, pres_lam, pres_A,
- duration/24,
- sin/cos day-of-year, sin/cos hour-of-day]
+[ tail: −45 days of history | forecast point | head: +45 days of future ]
 ```
-K is derived from history (same `compute_K_from_history` lookup: how many joint patterns historically covered horizon T on this day-of-year). The model outputs K_MAX pattern vectors in a single forward pass; at inference the first K are used.
+
+Training samples are built by sliding the centre 1 hour at a time across the full 6-year dataset. For each centre:
+- **Tail** = all joint segments with `start_time ∈ [centre − 45d, centre)` — zero-padded left to MAX_SEQ_LEN=256
+- **Head** = all joint segments with `start_time ∈ [centre, centre + 45d)` — zero-padded right to MAX_SEQ_LEN=256
+
+This gives ~51,000 training samples. Each sample is a concrete example of "this is what 45 days of patterns looked like before this date — predict the next 45 days of patterns". Seasonality is learned implicitly: the model sees January tails paired with January heads, July tails with July heads, across all 6 years.
+
+The Transformer encodes the tail (with padding mask), uses the last real token as context, and predicts the full head sequence in one forward pass.
+
+Each pattern vector (FEAT_DIM=30):
+```
+[temp_onehot(6), temp_L, temp_c, temp_lam, temp_A, temp_B,   # 11
+ pres_onehot(3), pres_L, pres_c, pres_lam, pres_A,           # 7
+ wind_onehot(3), wind_L, wind_c, wind_lam, wind_A,           # 7
+ duration/24,                                                  # 1
+ sin/cos day-of-year, sin/cos hour-of-day]                    # 4
+```
+
+`HALF_WINDOW_DAYS` is a single parameter — changing it lets us study how forecast horizon affects accuracy (planned: compare 45d, 30d, 15d, 7d windows).
 
 **Step 6 — Decode**  
-For each predicted pattern, apply the temperature equation and the pressure equation in parallel over `duration_hours` steps. Chain segments: `x₀` of each segment = last value of the previous. Returns two time series simultaneously.
+For each predicted pattern, apply all three channel equations in parallel over `duration_hours` steps. Chain segments: `x₀` of each segment = last value of the previous. Returns three time series simultaneously (temperature, pressure, wind speed).

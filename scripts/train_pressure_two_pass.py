@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SEGMENTS_PATH = Path("artifacts/pressure_segments.json")
+SEGMENTS_PATH = Path("segments/pressure_segments.json")
 MODEL_PATH    = Path("artifacts/pressure_two_pass.pt")
 
 ODE_FEAT_DIM  = 7    # [3 type one-hot, L, c, lam, A]  (no duration — added below)

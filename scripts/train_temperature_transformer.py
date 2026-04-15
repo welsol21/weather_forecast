@@ -51,7 +51,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SEGMENTS_PATH = Path("artifacts/temperature_segments.json")
+SEGMENTS_PATH = Path("segments/temperature_segments.json")
 MODEL_PATH    = Path("artifacts/temperature_transformer.pt")
 
 ODE_FEAT_DIM  = 12    # ODE feature vector

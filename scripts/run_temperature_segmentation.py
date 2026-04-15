@@ -167,7 +167,7 @@ def main():
                 "n_points": s.fit.n_points,
             },
         })
-    segs_path = Path("artifacts/temperature_segments.json")
+    segs_path = Path("segments/temperature_segments.json")
     segs_path.write_text(json.dumps(seg_records, indent=2), encoding="utf-8")
     logger.info("Segments saved to %s (%d segments)", segs_path, len(seg_records))
 

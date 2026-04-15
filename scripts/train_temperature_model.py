@@ -50,7 +50,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 REPORT_PATH    = Path("artifacts/temperature_segmentation_report.json")
-SEGMENTS_PATH  = Path("artifacts/temperature_segments.json")
+SEGMENTS_PATH  = Path("segments/temperature_segments.json")
 MODEL_PATH     = Path("artifacts/temperature_gru.pt")
 
 HISTORY_LEN    = 14     # segments of history

@@ -1,0 +1,6 @@
+{
+  "n_segments": 10055,
+  "half_window_hours": 12,
+  "half_window_days": 0.5,
+  "final_loss": 0.0695
+}

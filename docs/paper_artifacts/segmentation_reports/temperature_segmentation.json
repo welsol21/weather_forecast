@@ -1,0 +1,114 @@
+{
+  "segmentation_report": {
+    "total_segments": 1707,
+    "total_hours": 53352,
+    "mean_duration_h": 31.3,
+    "min_duration_h": 7,
+    "max_duration_h": 121,
+    "overall_mean_rms_celsius": 0.566,
+    "by_equation_type": {
+      "linear_harmonic": {
+        "count": 1234,
+        "pct": 72.3,
+        "mean_duration_h": 31.7,
+        "min_duration_h": 24,
+        "max_duration_h": 121,
+        "mean_rms_celsius": 0.572
+      },
+      "damped_harmonic": {
+        "count": 450,
+        "pct": 26.4,
+        "mean_duration_h": 29.9,
+        "min_duration_h": 24,
+        "max_duration_h": 76,
+        "mean_rms_celsius": 0.557
+      },
+      "exponential": {
+        "count": 22,
+        "pct": 1.3,
+        "mean_duration_h": 35.0,
+        "min_duration_h": 24,
+        "max_duration_h": 51,
+        "mean_rms_celsius": 0.462
+      },
+      "linear": {
+        "count": 1,
+        "pct": 0.1,
+        "mean_duration_h": 7.0,
+        "min_duration_h": 7,
+        "max_duration_h": 7,
+        "mean_rms_celsius": 0.462
+      }
+    }
+  },
+  "february_inference": {
+    "last_segment_eq": "linear",
+    "last_segment_start": "2026-01-31 17:00:00",
+    "last_segment_duration_h": 7,
+    "february_n_points": 672,
+    "february_mae_celsius": 41.737,
+    "february_rmse_celsius": 47.908,
+    "preview_first_10": [
+      {
+        "timestamp": "2026-02-01 00:00:00",
+        "actual": 5.7,
+        "predicted": 5.43,
+        "error": 0.27
+      },
+      {
+        "timestamp": "2026-02-01 01:00:00",
+        "actual": 5.6,
+        "predicted": 5.55,
+        "error": 0.05
+      },
+      {
+        "timestamp": "2026-02-01 02:00:00",
+        "actual": 5.8,
+        "predicted": 5.68,
+        "error": 0.12
+      },
+      {
+        "timestamp": "2026-02-01 03:00:00",
+        "actual": 5.8,
+        "predicted": 5.8,
+        "error": -0.0
+      },
+      {
+        "timestamp": "2026-02-01 04:00:00",
+        "actual": 6.0,
+        "predicted": 5.93,
+        "error": 0.07
+      },
+      {
+        "timestamp": "2026-02-01 05:00:00",
+        "actual": 5.5,
+        "predicted": 6.05,
+        "error": -0.55
+      },
+      {
+        "timestamp": "2026-02-01 06:00:00",
+        "actual": 5.2,
+        "predicted": 6.18,
+        "error": -0.98
+      },
+      {
+        "timestamp": "2026-02-01 07:00:00",
+        "actual": 4.7,
+        "predicted": 6.3,
+        "error": -1.6
+      },
+      {
+        "timestamp": "2026-02-01 08:00:00",
+        "actual": 4.3,
+        "predicted": 6.43,
+        "error": -2.13
+      },
+      {
+        "timestamp": "2026-02-01 09:00:00",
+        "actual": 4.3,
+        "predicted": 6.55,
+        "error": -2.25
+      }
+    ]
+  }
+}

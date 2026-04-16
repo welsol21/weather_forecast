@@ -1,0 +1,32 @@
+{
+  "segmentation_report": {
+    "total_segments": 1798,
+    "total_hours": 53352,
+    "mean_duration_h": 29.7,
+    "min_duration_h": 9,
+    "max_duration_h": 81,
+    "overall_mean_rms_hpa": 0.883,
+    "by_equation_type": {
+      "exponential": {
+        "count": 895,
+        "pct": 49.8,
+        "mean_duration_h": 30.3,
+        "min_duration_h": 9,
+        "max_duration_h": 75,
+        "mean_rms_hpa": 0.783
+      },
+      "linear": {
+        "count": 903,
+        "pct": 50.2,
+        "mean_duration_h": 29.1,
+        "min_duration_h": 24,
+        "max_duration_h": 81,
+        "mean_rms_hpa": 0.982
+      }
+    }
+  },
+  "february_extrapolation": {
+    "mae_hpa": 9.751,
+    "rmse_hpa": 11.319
+  }
+}

@@ -326,8 +326,63 @@
   </p>
 </div>
 
+<!-- ══════════════ MOTIVATION ══════════════ -->
+<h2>1. Conceptual Motivation</h2>
+
+<p>
+  This work did not originate in meteorology. It originated in a broader question
+  about the nature of sequential data — specifically, in prior work on linguistic
+  pattern analysis. There, we observed that natural language is not simply a stream
+  of tokens: it is a stream of <em>regimes</em>, each with internal structure,
+  characteristic duration, and predictable transitions to the next. The question
+  we asked was whether this view of sequences — not as raw symbols, but as
+  structured analytical units — could generalise beyond language.
+</p>
+
+<p>
+  The intellectual precedent we find most clarifying is Mendeleev's Periodic Table.
+  Mendeleev did not discover new chemical elements. What he discovered was that
+  elements, when arranged by their properties, <strong>form repeating patterns</strong> —
+  and that those patterns are predictive. When a pattern was violated, he did not
+  discard the anomaly; he left an empty cell and predicted the properties of an
+  element not yet found. The method was: identify the minimal unit of description,
+  classify it, study the grammar of its sequences, and use that grammar to forecast.
+</p>
+
+<p>
+  We propose that this is a <strong>general scientific method</strong>, not specific
+  to chemistry or language. Any sufficiently regular natural process can be decomposed
+  into a vocabulary of recurring analytical units, and the sequential structure of
+  those units carries predictive information about what comes next. Language was the
+  domain where this was first formalised at the neural-network level — the transformer
+  architecture learns precisely this kind of sequential grammar. Weather was our
+  next test case.
+</p>
+
+<p>
+  In meteorology, the "elements" are physical regimes: a sustained high-pressure
+  plateau, an exponential frontal drop, a post-frontal harmonic oscillation. Each
+  is described by an ordinary differential equation. Their sequence is not random —
+  a deepening low does not spontaneously become a stable anticyclone without passing
+  through identifiable intermediate states. If the transformer can learn the grammar
+  of meteorological regimes from six years of single-station history, it would
+  confirm that the pattern-sequence approach transfers across domains.
+</p>
+
+<div class="callout proposal">
+  <strong>Core hypothesis</strong>
+  The results presented in this report — even with their limitations — are
+  consistent with this hypothesis. A model trained on no physics, no spatial
+  data, and one station's historical record learns enough sequential structure
+  to beat naive baselines on pressure at short range and match them on temperature.
+  This is not a claim of superiority over operational NWP. It is a proof of concept
+  that <strong>the grammar of physical regimes is learnable from data alone</strong>,
+  in the same way that the grammar of language is.
+  Weather was the second test. It will not be the last.
+</div>
+
 <!-- ══════════════ COMPARISON ══════════════ -->
-<h2>1. Comparison with Operational Forecasts</h2>
+<h2>2. Comparison with Operational Forecasts</h2>
 
 <p>
   To contextualise results we obtained actual NWP forecast data for the same
@@ -443,7 +498,7 @@
 </div>
 
 <!-- ══════════════ 1. INTRODUCTION ══════════════ -->
-<h2>2. Introduction</h2>
+<h2>3. Introduction</h2>
 
 <p>
   Modern operational weather forecasting relies on numerical weather prediction (NWP) —
@@ -492,7 +547,7 @@
 </ul>
 
 <!-- ══════════════ 2. METHODOLOGY ══════════════ -->
-<h2>3. Methodology</h2>
+<h2>4. Methodology</h2>
 
 <h3>2.1 ODE Segmentation (Single Channel)</h3>
 <p>
@@ -575,7 +630,7 @@ Ensemble(h) =
 </div>
 
 <!-- ══════════════ 3. EXPERIMENTS ══════════════ -->
-<h2>4. Experimental Setup</h2>
+<h2>5. Experimental Setup</h2>
 
 <h3>3.1 Dataset</h3>
 <p>
@@ -653,7 +708,7 @@ Ensemble(h) =
 </ul>
 
 <!-- ══════════════ 4. RESULTS ══════════════ -->
-<h2>5. Results — February 2026 Case Study</h2>
+<h2>6. Results — February 2026 Case Study</h2>
 
 <div class="figure">
   <div class="chart-wrap"><canvas id="results_chart"></canvas></div>
@@ -750,7 +805,7 @@ Ensemble(h) =
 </table>
 
 <!-- ══════════════ 5. DISCUSSION ══════════════ -->
-<h2>6. Discussion</h2>
+<h2>7. Discussion</h2>
 
 <h3>5.1 What Works</h3>
 <div class="callout finding">
@@ -805,7 +860,7 @@ Ensemble(h) =
 </p>
 
 <!-- ══════════════ 6. PROPOSED RESEARCH AGENDA ══════════════ -->
-<h2>7. Proposed Research Agenda for Full Paper</h2>
+<h2>8. Proposed Research Agenda for Full Paper</h2>
 <p>
   To develop this into a publishable contribution, we propose the following extensions:
 </p>
@@ -841,7 +896,7 @@ Ensemble(h) =
 </div>
 
 <!-- ══════════════ 7. CONCLUSION ══════════════ -->
-<h2>8. Conclusion</h2>
+<h2>9. Conclusion</h2>
 <p>
   We have proposed and implemented a novel two-stage approach to single-station weather
   forecasting: walk-forward ODE segmentation followed by transformer sequence prediction

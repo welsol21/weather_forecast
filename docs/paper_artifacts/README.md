@@ -36,11 +36,13 @@ paper_artifacts/
 ├── segmentation_reports/                 # ODE segmentation statistics per channel
 │   ├── temperature_segmentation.json
 │   └── pressure_segmentation.json
-└── segments/                             # Raw ODE segment data (training corpus)
-    ├── temperature_segments.json         #   1,707 segments
-    ├── pressure_segments.json            #   1,798 segments
-    ├── windspeed_segments.json           #   1,951 segments
-    └── joint_segments.json              #   10,055 joint segments (transformer input)
+├── segments/                             # Raw ODE segment data (training corpus)
+│   ├── temperature_segments.json         #   1,707 segments
+│   ├── pressure_segments.json            #   1,798 segments
+│   ├── windspeed_segments.json           #   1,951 segments
+│   └── joint_segments.json              #   10,055 joint segments (transformer input)
+└── data/                                 # Original observational dataset
+    └── hly4935_subset.csv                #   Met Éireann HLY, station 4935, 2020–2026
 ```
 
 ---
@@ -190,14 +192,21 @@ These are the raw output of the ODE segmentation pipeline. Each JSON array conta
 
 ---
 
-## Data Source
+## 8. `data/` — Observational Dataset
 
-All observations: **Met Éireann HLY dataset, station 4935 (Knock Airport, Co. Mayo, Ireland)**  
-Period: January 2020 – February 2026  
-Variables used: dry-bulb temperature (°C), mean sea-level pressure (hPa), wind speed (knots)  
-File in repository: `hly4935_subset.csv`
+| File | Size | Description |
+|------|------|-------------|
+| `hly4935_subset.csv` | 4.3 MB | Hourly observations from Met Éireann HLY dataset, station 4935 (Knock Airport, Co. Mayo, Ireland), January 2020 – February 2026. |
 
-Operational NWP comparison data (ECMWF IFS 0.25°, GFS Seamless) were fetched from the **Open-Meteo Historical Forecast API** for the same station coordinates and the February 1–7 2026 evaluation period.
+**Columns used:**
+- `date` — UTC timestamp (hourly)
+- `drybulb` — dry-bulb temperature (°C)
+- `msl` — mean sea-level pressure (hPa)
+- `wdsp` — mean wind speed (knots)
+
+This file is the single input to the entire pipeline: segmentation, training, and evaluation all derive from it. The February 2026 portion (rows after 2026-01-31) was held out and used exclusively for evaluation; it was never seen during training.
+
+**Operational NWP comparison data** (ECMWF IFS 0.25°, GFS Seamless) were fetched separately from the **Open-Meteo Historical Forecast API** for the same station coordinates and the February 1–7 2026 evaluation period. They are not stored as files but are embedded directly in the forecast report and technical report.
 
 ---
 

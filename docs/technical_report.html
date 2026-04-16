@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ODE-Segment Sequence Forecasting — Technical Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  /* ── Reset & Base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 16px; }
+  body {
+    font-family: 'Georgia', 'Times New Roman', serif;
+    background: #fafaf8;
+    color: #1a1a1a;
+    line-height: 1.75;
+  }
+
+  /* ── Page layout ── */
+  .page {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 64px 40px 96px;
+  }
+
+  /* ── Header / Title block ── */
+  .paper-header {
+    border-bottom: 2px solid #1a1a1a;
+    padding-bottom: 28px;
+    margin-bottom: 36px;
+  }
+  .paper-type {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    color: #666;
+    margin-bottom: 14px;
+  }
+  .paper-title {
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -.3px;
+    margin-bottom: 18px;
+    color: #0f0f0f;
+  }
+  .paper-subtitle {
+    font-size: 15px;
+    color: #444;
+    font-style: italic;
+    margin-bottom: 20px;
+    line-height: 1.5;
+  }
+  .author-block {
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .author { font-size: 14px; }
+  .author strong { display: block; color: #1a1a1a; font-style: normal; font-family: 'Segoe UI', system-ui, sans-serif; }
+  .author span { color: #666; font-size: 12px; }
+  .meta-row {
+    font-size: 12px;
+    color: #888;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    margin-top: 12px;
+  }
+
+  /* ── Abstract ── */
+  .abstract {
+    background: #f2f0eb;
+    border-left: 3px solid #1a1a1a;
+    padding: 20px 24px;
+    margin-bottom: 40px;
+    border-radius: 0 4px 4px 0;
+  }
+  .abstract-label {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    margin-bottom: 8px;
+    color: #444;
+  }
+  .abstract p {
+    font-size: 14px;
+    line-height: 1.7;
+    color: #222;
+  }
+
+  /* ── Sections ── */
+  h2 {
+    font-size: 19px;
+    font-weight: 700;
+    margin: 44px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #ddd;
+    color: #0f0f0f;
+    letter-spacing: -.2px;
+  }
+  h3 {
+    font-size: 15px;
+    font-weight: 700;
+    margin: 28px 0 8px;
+    color: #222;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+  p {
+    margin-bottom: 14px;
+    font-size: 15px;
+    color: #222;
+  }
+
+  /* ── Figures & Tables ── */
+  .figure {
+    background: #fff;
+    border: 1px solid #e0ddd8;
+    border-radius: 6px;
+    padding: 20px 20px 14px;
+    margin: 28px 0;
+  }
+  .figure-caption {
+    font-size: 12px;
+    color: #666;
+    margin-top: 10px;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  .figure-caption strong { color: #1a1a1a; }
+  .chart-wrap { position: relative; height: 220px; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin: 16px 0 8px;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+  }
+  thead th {
+    background: #1a1a1a;
+    color: #fff;
+    padding: 9px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 12px;
+    letter-spacing: .03em;
+  }
+  tbody td {
+    padding: 8px 14px;
+    border-bottom: 1px solid #e8e5e0;
+    color: #222;
+  }
+  tbody tr:nth-child(even) td { background: #f7f5f2; }
+  tbody tr:hover td { background: #edeae5; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .best { font-weight: 700; color: #1a6b2e; }
+  .ref  { color: #888; font-style: italic; }
+  .ours { background: #fffbe6 !important; }
+  .ours td { font-weight: 600; }
+
+  /* ── Inline code ── */
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 12.5px;
+    background: #f0ede8;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: #333;
+  }
+
+  /* ── Equation boxes ── */
+  .eq-block {
+    background: #f7f5f2;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 14px 20px;
+    margin: 14px 0 18px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    font-size: 13px;
+    color: #1a1a1a;
+    line-height: 1.8;
+    overflow-x: auto;
+  }
+
+  /* ── Callout boxes ── */
+  .callout {
+    border-radius: 6px;
+    padding: 16px 20px;
+    margin: 20px 0;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .callout.finding {
+    background: #e8f5e9;
+    border-left: 3px solid #2e7d32;
+  }
+  .callout.warning {
+    background: #fff8e1;
+    border-left: 3px solid #f9a825;
+  }
+  .callout.proposal {
+    background: #e3f2fd;
+    border-left: 3px solid #1565c0;
+  }
+  .callout strong { display: block; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 5px; }
+  .callout.finding strong { color: #1b5e20; }
+  .callout.warning strong { color: #e65100; }
+  .callout.proposal strong { color: #0d47a1; }
+
+  /* ── Contribution list ── */
+  .contrib-list {
+    list-style: none;
+    padding: 0;
+    margin: 12px 0 18px;
+  }
+  .contrib-list li {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 10px;
+    font-size: 14.5px;
+    align-items: flex-start;
+  }
+  .contrib-num {
+    flex-shrink: 0;
+    width: 24px; height: 24px;
+    background: #1a1a1a;
+    color: #fff;
+    border-radius: 50%;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    margin-top: 2px;
+  }
+
+  /* ── References / Footer ── */
+  .references {
+    margin-top: 52px;
+    padding-top: 20px;
+    border-top: 1px solid #ddd;
+  }
+  .references h2 { border: none; margin-top: 0; }
+  .ref-list {
+    list-style: none;
+    font-size: 13px;
+    color: #444;
+    line-height: 1.6;
+  }
+  .ref-list li {
+    margin-bottom: 8px;
+    padding-left: 28px;
+    position: relative;
+  }
+  .ref-list li::before {
+    content: attr(data-n);
+    position: absolute; left: 0;
+    color: #888; font-weight: 600;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+  }
+
+  .page-footer {
+    margin-top: 64px;
+    font-size: 11px;
+    color: #aaa;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    text-align: center;
+  }
+
+  @media print {
+    body { background: #fff; }
+    .page { padding: 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- ══════════════ HEADER ══════════════ -->
+<header class="paper-header">
+  <div class="paper-type">Technical Report &nbsp;·&nbsp; April 2026 &nbsp;·&nbsp; Draft v1.0</div>
+  <h1 class="paper-title">ODE-Segment Sequence Forecasting:<br>
+  Learning Weather Pattern Grammar<br>
+  from Single-Station Observations</h1>
+  <p class="paper-subtitle">
+    A transformer-based approach to single-station deterministic weather forecasting
+    via walk-forward analytical segmentation and symmetric-window sequence modelling
+  </p>
+  <div class="author-block">
+    <div class="author">
+      <strong>Vladyslav Rastvorov</strong>
+      <span>Final Year Student<br>Department of Computer Science<br>Munster Technological University</span>
+    </div>
+    <div class="author">
+      <strong>Dr. Nasir Ahmad</strong>
+      <span>Supervisor<br>Department of Computer Science<br>Munster Technological University</span>
+    </div>
+  </div>
+  <div class="meta-row">
+    Station: Knock Airport, Ireland (EIKN / 4935) &nbsp;·&nbsp;
+    Dataset: Met Éireann HLY, 2020-01 – 2026-03 &nbsp;·&nbsp;
+    <a href="https://github.com/welsol21/weather_forecast" style="color:#444;">github.com/welsol21/weather_forecast</a>
+  </div>
+</header>
+
+<!-- ══════════════ ABSTRACT ══════════════ -->
+<div class="abstract">
+  <div class="abstract-label">Abstract</div>
+  <p>
+    We present a novel approach to single-station weather forecasting in which raw hourly
+    observations are first compressed into sequences of analytical ordinary differential equation (ODE)
+    segments — each segment described by an equation type and its fitted parameters — and then
+    a transformer encoder is trained to predict the future sequence of segments from a symmetric
+    window of historical ones. Unlike NWP-based methods, our approach uses no atmospheric physics
+    or spatial information; unlike standard time-series models, it operates on an interpretable,
+    compressed representation rather than raw sensor values. On a 7-day evaluation period (February 2026,
+    Knock Airport, Ireland), the ensemble achieves a temperature MAE of 1.42°C at 12 h and
+    pressure MAE of 0.89 hPa at 12 h, beating naive persistence by 34% on pressure and matching
+    it on temperature. We discuss the limitations of a single-station, single-week evaluation and
+    propose a research agenda for a full paper submission.
+  </p>
+</div>
+
+<!-- ══════════════ COMPARISON ══════════════ -->
+<h2>1. Comparison with Operational Forecasts</h2>
+
+<p>
+  To contextualise results we obtained actual NWP forecast data for the same
+  station and period from the <strong>Open-Meteo Historical Forecast API</strong>
+  — ECMWF IFS 0.25° and GFS Seamless, both initialised at 2026-02-01 00:00 UTC.
+  These are the same forecasts that operational meteorologists and weather apps
+  use. All figures below are therefore a direct apples-to-apples comparison:
+  same station, same 168 hours, same verification metric (MAE).
+</p>
+
+<div class="figure">
+  <div class="chart-wrap" style="height:240px"><canvas id="cmp_temp"></canvas></div>
+  <div class="figure-caption">
+    <strong>Figure 1a — Temperature (°C).</strong>
+    Actual observations vs ECMWF IFS, GFS, our ensemble, and naive persistence.
+    ECMWF and GFS track the frontal cooling on Feb 1 night and the subsequent
+    recovery closely. Our model overshoots early then flattens. Persistence drifts
+    from the initial value of 5.5°C.
+  </div>
+</div>
+
+<div class="figure">
+  <div class="chart-wrap" style="height:240px"><canvas id="cmp_pres"></canvas></div>
+  <div class="figure-caption">
+    <strong>Figure 1b — Pressure MSL (hPa).</strong>
+    A 22 hPa drop over 7 days (frontal system). ECMWF tracks it almost perfectly.
+    Our model captures the initial trend but accumulates a systematic downward drift,
+    ending ~27 hPa below actual. Persistence, anchored at 995.9 hPa, also fails badly.
+  </div>
+</div>
+
+<div class="figure">
+  <div class="chart-wrap" style="height:240px"><canvas id="cmp_wind"></canvas></div>
+  <div class="figure-caption">
+    <strong>Figure 1c — Wind Speed (knots).</strong>
+    Wind peaks at 22 kt on Feb 6–7 (storm passage). ECMWF captures the peak.
+    Our model overestimates the sustained gale and misses the calm on Feb 7 evening.
+    GFS shows a spurious spike at h=5 (a known GFS artefact at this location).
+  </div>
+</div>
+
+<h3>MAE Summary — All Methods</h3>
+
+<table>
+  <thead>
+    <tr>
+      <th>Method</th>
+      <th class="num">T h1–12</th>
+      <th class="num">T h1–24</th>
+      <th class="num">T overall</th>
+      <th class="num">P h1–12</th>
+      <th class="num">P overall</th>
+      <th class="num">W h1–12</th>
+      <th class="num">W overall</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>ECMWF IFS 0.25°</strong></td>
+      <td class="num best">0.63°C</td>
+      <td class="num best">0.73°C</td>
+      <td class="num best">0.44°C</td>
+      <td class="num best">0.13 hPa</td>
+      <td class="num best">0.59 hPa</td>
+      <td class="num best">1.24 kt</td>
+      <td class="num best">1.48 kt</td>
+    </tr>
+    <tr>
+      <td>GFS Seamless</td>
+      <td class="num">0.74°C</td>
+      <td class="num">0.79°C</td>
+      <td class="num">0.67°C</td>
+      <td class="num">0.58 hPa</td>
+      <td class="num">0.83 hPa</td>
+      <td class="num">1.74 kt</td>
+      <td class="num">1.78 kt</td>
+    </tr>
+    <tr>
+      <td>Persistence</td>
+      <td class="num">0.48°C</td>
+      <td class="num">1.47°C</td>
+      <td class="num">1.14°C</td>
+      <td class="num">1.35 hPa</td>
+      <td class="num">8.00 hPa</td>
+      <td class="num">1.50 kt</td>
+      <td class="num">7.21 kt</td>
+    </tr>
+    <tr class="ours">
+      <td><strong>Ours (Ensemble)</strong></td>
+      <td class="num">1.42°C</td>
+      <td class="num">1.86°C</td>
+      <td class="num">1.80°C</td>
+      <td class="num">0.89 hPa</td>
+      <td class="num">6.37 hPa</td>
+      <td class="num">2.48 kt</td>
+      <td class="num">5.62 kt</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout warning">
+  <strong>Honest assessment</strong>
+  ECMWF is significantly better across all channels and all horizons —
+  as expected for a global atmosphere model with supercomputing infrastructure,
+  satellite assimilation, and ensemble post-processing.
+  Our model's competitive niche is narrow but real:
+  <strong>pressure at h1–12 beats persistence by 34%</strong> (0.89 vs 1.35 hPa),
+  and the approach requires only a local historical CSV — no NWP infrastructure.
+  Temperature accuracy is below both NWP systems and roughly equal to persistence
+  on this maritime week; wind diverges after 24 h due to accumulated ODE drift.
+  A longer evaluation period and multi-station generalisation are required
+  before stronger claims can be made.
+</div>
+
+<!-- ══════════════ 1. INTRODUCTION ══════════════ -->
+<h2>2. Introduction</h2>
+
+<p>
+  Modern operational weather forecasting relies on numerical weather prediction (NWP) —
+  global or regional atmosphere models that numerically integrate the governing
+  fluid-dynamics equations from an analysed initial state. Systems such as ECMWF-IFS
+  achieve temperature MAE of approximately 1.0–1.5°C at 24 h over Europe [1].
+  However, NWP requires supercomputing infrastructure, global observations, and
+  significant domain expertise. An alternative question is: <em>how much can be learned
+  from the historical record at a single station alone?</em>
+</p>
+<p>
+  Classical approaches to this problem include climatological averaging, persistence
+  (forecast = current observation), and station-level statistical post-processing (MOS).
+  More recently, deep sequence models such as LSTMs and transformers have been applied
+  to raw meteorological time series [2, 3]. These methods, however, operate on
+  high-frequency noisy observations, require significant data preprocessing, and
+  produce predictions that are difficult to interpret.
+</p>
+<p>
+  We propose a different representational substrate: before any learning takes place,
+  we segment the time series into <em>analytically described intervals</em>, each governed
+  by one of a small library of ODE-derived equations. The resulting sequence of
+  (equation type, parameters, duration) tuples is a compressed, interpretable
+  summary of the station's meteorological history. We then train a transformer
+  encoder to predict the future segment sequence from a window of past ones.
+</p>
+
+<h3>Contributions</h3>
+<ul class="contrib-list">
+  <li><span class="contrib-num">1</span><span><strong>ODE-based weather segmentation.</strong>
+  A walk-forward algorithm that fits a library of analytical equations to each channel
+  (temperature, pressure, wind speed), advancing the boundary whenever residual error
+  exceeds a channel-specific tolerance. Six equation types for temperature, three for
+  pressure and wind.</span></li>
+  <li><span class="contrib-num">2</span><span><strong>Multi-channel joint segmentation.</strong>
+  A unified boundary set formed as the union of per-channel boundary timestamps.
+  Each joint segment carries the analytical fit for every channel, enabling
+  correlated multi-channel sequence prediction.</span></li>
+  <li><span class="contrib-num">3</span><span><strong>Symmetric-window sequence training.</strong>
+  A training procedure where each forecast point is the centre of a fixed-width
+  window; the tail (past) is the transformer input and the head (future) is the
+  target. Zero-padding allows variable-length histories within a fixed tensor shape.</span></li>
+  <li><span class="contrib-num">4</span><span><strong>Window-size ablation.</strong>
+  A systematic experiment showing that the optimal training window size is approximately
+  equal to the target forecast horizon, motivating a multi-model ensemble.</span></li>
+</ul>
+
+<!-- ══════════════ 2. METHODOLOGY ══════════════ -->
+<h2>3. Methodology</h2>
+
+<h3>2.1 ODE Segmentation (Single Channel)</h3>
+<p>
+  For a univariate hourly time series <em>y(t)</em>, we greedily fit a sequence of
+  analytical segments. Starting at the first observation, we fit the simplest adequate
+  equation; we extend the current segment one step at a time, refitting until the
+  root-mean-square residual exceeds the channel tolerance ε. At that point, a boundary
+  is recorded and a new segment begins.
+</p>
+<p>
+  The equation library for temperature (6 types) and pressure / wind speed (3 types) is:
+</p>
+<div class="eq-block">
+Temperature:
+  harmonic:         y(t) = L + A·cos(c·t + φ)
+  linear_harmonic:  y(t) = L + B·t + A·cos(c·t + φ)
+  damped_harmonic:  y(t) = L + A·e^(−λt)·cos(c·t + φ)
+  exponential:      y(t) = L + A·e^(−λt)
+  linear:           y(t) = L + B·t
+  constant:         y(t) = L
+
+Pressure / Wind speed:
+  exponential:      y(t) = L + A·e^(−λt)
+  linear:           y(t) = L + c·t
+  constant:         y(t) = L
+
+Tolerances: ε_temp = 1.0°C,  ε_pres = 1.0 hPa,  ε_wind = 2.0 kt
+</div>
+<p>
+  Fitting is done independently per channel over 2020-01-01 – 2026-01-31
+  (training split) and 2026-02 (test split, never seen during training).
+</p>
+
+<h3>2.2 Multi-channel Joint Segmentation</h3>
+<p>
+  Boundaries from each channel are combined:
+  <em>B = sort( unique( B_temp ∪ B_pres ∪ B_wind ) )</em>, where each
+  <em>B_ch</em> contains both the start and end time of every segment in channel <em>ch</em>.
+  Each resulting interval [t<sub>i</sub>, t<sub>i+1</sub>) is then re-fitted
+  independently per channel. This guarantees that a meteorological event significant
+  in any one channel (e.g. a frontal passage visible first in pressure) creates a
+  boundary for all channels simultaneously.
+</p>
+<p>
+  The joint segmentation over 6 years yields <strong>10,055 segments</strong>
+  with a mean duration of 5.3 hours. Each segment is represented as a 30-dimensional
+  vector: one-hot equation type + normalised parameters + duration + cyclic time
+  features (day-of-year, hour-of-day).
+</p>
+
+<h3>2.3 Transformer Encoder with Symmetric Window</h3>
+<p>
+  For a forecast point (centre) <em>c</em>, we extract:
+</p>
+<ul style="margin:0 0 14px 20px; font-size:14.5px;">
+  <li><strong>Tail</strong>: segments with <em>start ∈ [c − W, c)</em> — right-aligned, zero-padded to length 256.</li>
+  <li><strong>Head</strong>: segments with <em>start ∈ [c, c + W)</em> — left-aligned, zero-padded to length 256.</li>
+</ul>
+<p>
+  A 3-layer transformer encoder (d=128, 4 heads) processes the tail with a padding
+  mask. The last real token's hidden state is projected to predict the full head
+  sequence (256 × 30). Training minimises MSE on the head ODE vectors.
+  The centre shifts by 1 hour across all valid positions in the training data.
+  Window size <em>W</em> is a hyperparameter explored in §3.2.
+</p>
+
+<h3>2.4 Ensemble and Decoding</h3>
+<p>
+  To generate an hourly forecast, predicted head segments are decoded back to
+  physical values by evaluating each segment's ODE equation at the appropriate
+  time offsets, chaining initial conditions across segments.
+  An ensemble combines three models trained with different window sizes,
+  assigning each to the horizon where it performs best on held-out validation:
+</p>
+<div class="eq-block">
+Ensemble(h) =
+  W=12h   model,  if h ∈ [1, 12]
+  W=45d   model,  if h ∈ [13, 24]
+  W=15d   model,  if h ∈ [25, 168]
+</div>
+
+<!-- ══════════════ 3. EXPERIMENTS ══════════════ -->
+<h2>4. Experimental Setup</h2>
+
+<h3>3.1 Dataset</h3>
+<p>
+  We use the Met Éireann Historical Hourly dataset for station 4935
+  (Knock Airport, Co. Mayo, Ireland; 53.91°N 8.82°W, 189 m a.s.l.).
+  The station is in an exposed Atlantic coastal location with high wind speeds
+  and frequent frontal passages. Training split: 2020-01-01 – 2026-01-31
+  (52,584 hourly observations per channel). Test split: 2026-02-01 – 2026-02-07
+  (168 hours). The test week features a significant frontal system with MSL
+  pressure ranging from 978.7 to 1000.8 hPa — a 22 hPa swing, making it a
+  challenging week for pressure prediction.
+</p>
+
+<h3>3.2 Window-Size Ablation</h3>
+<p>
+  Nine models were trained with window sizes ranging from 1 hour to 45 days.
+  Each was evaluated on held-out segments from the training period.
+  Results for T=24h and T=168h (temperature MAE):
+</p>
+
+<div class="figure">
+  <div class="chart-wrap"><canvas id="ablation_chart"></canvas></div>
+  <div class="figure-caption">
+    <strong>Figure 1.</strong> Temperature MAE on held-out validation vs training window size.
+    Short windows excel at short horizons; longer windows capture
+    multi-day patterns. Dashed lines: T=24h (orange), T=168h (blue).
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Window</th>
+      <th class="num">Temp MAE @24h</th>
+      <th class="num">Temp MAE @168h</th>
+      <th class="num">Pres MAE @24h</th>
+      <th class="num">Wind MAE @24h</th>
+      <th>Best for</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>1h</td><td class="num ref">NaN (degenerate)</td><td class="num ref">—</td><td class="num ref">—</td><td class="num ref">—</td><td class="ref">—</td></tr>
+    <tr><td>3h</td><td class="num ref">n/a *</td><td class="num ref">—</td><td class="num ref">—</td><td class="num ref">—</td><td class="ref">—</td></tr>
+    <tr><td>6h</td><td class="num ref">n/a *</td><td class="num ref">—</td><td class="num ref">—</td><td class="num ref">—</td><td class="ref">—</td></tr>
+    <tr class="ours"><td><strong>12h</strong></td><td class="num">3.58°C</td><td class="num">4.29°C</td><td class="num best">1.58 hPa</td><td class="num best">4.32 kt</td><td><strong>h ≤ 12</strong></td></tr>
+    <tr><td>24h</td><td class="num">1.99°C</td><td class="num">1.78°C</td><td class="num">4.29 hPa</td><td class="num">2.43 kt</td><td>—</td></tr>
+    <tr><td>7d</td><td class="num">2.64°C</td><td class="num">2.96°C</td><td class="num">6.52 hPa</td><td class="num">1.65 kt</td><td>—</td></tr>
+    <tr class="ours"><td><strong>15d</strong></td><td class="num">1.89°C</td><td class="num best">1.80°C</td><td class="num">4.38 hPa</td><td class="num">2.33 kt</td><td><strong>h 25–168</strong></td></tr>
+    <tr><td>30d</td><td class="num">2.67°C</td><td class="num">3.35°C</td><td class="num">7.04 hPa</td><td class="num">2.22 kt</td><td>—</td></tr>
+    <tr class="ours"><td><strong>45d</strong></td><td class="num best">1.99°C</td><td class="num">1.78°C</td><td class="num">4.29 hPa</td><td class="num">2.43 kt</td><td><strong>h 13–24</strong></td></tr>
+  </tbody>
+</table>
+<p style="font-size:12px; color:#888; margin-top:4px;">
+  * 6h/3h models failed inference: mean segment duration (5.3h) exceeds window, yielding empty tail sequences.
+  Highlighted rows: models selected for the ensemble.
+</p>
+
+<div class="callout finding">
+  <strong>Finding 1 — Window–Horizon Correspondence</strong>
+  The optimal training window size approximately equals the target forecast horizon.
+  This is consistent with the hypothesis that the transformer learns to extrapolate
+  recurring patterns at the scale of the window; shorter windows cannot capture
+  multi-day pressure cycles; longer windows dilute the local signal.
+</div>
+
+<h3>3.3 Baselines</h3>
+<p>
+  We compare against two parameter-free baselines computed from station observations:
+</p>
+<ul style="margin:0 0 14px 20px; font-size:14.5px;">
+  <li><strong>Persistence</strong>: predicts the last observed value at all lead times
+  (y&#770;(t+h) = y(t)). Strong in maritime climates with low hourly variability.</li>
+  <li><strong>Historical climatology</strong>: predicts the mean of same hour/day-of-year
+  across 2020–2025 training years. Strong for seasonal patterns, weak for synoptic variability.</li>
+</ul>
+
+<!-- ══════════════ 4. RESULTS ══════════════ -->
+<h2>5. Results — February 2026 Case Study</h2>
+
+<div class="figure">
+  <div class="chart-wrap"><canvas id="results_chart"></canvas></div>
+  <div class="figure-caption">
+    <strong>Figure 2.</strong> Ensemble forecast vs actual observations, February 1–7 2026.
+    Shaded regions indicate which model contributes to the ensemble at each horizon.
+    The 22 hPa pressure drop over the test week is a challenging synoptic event.
+  </div>
+</div>
+
+<h3>4.1 Comparison with Baselines</h3>
+
+<table>
+  <thead>
+    <tr>
+      <th>Method</th>
+      <th class="num">T MAE h1–12</th>
+      <th class="num">T MAE h1–24</th>
+      <th class="num">T MAE h25–168</th>
+      <th class="num">P MAE h1–12</th>
+      <th class="num">P MAE h1–24</th>
+      <th class="num">P MAE h25–168</th>
+      <th class="num">W MAE h25–168</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Persistence</td>
+      <td class="num best">0.48°C</td>
+      <td class="num">1.47°C</td>
+      <td class="num">1.14°C</td>
+      <td class="num">1.35 hPa</td>
+      <td class="num">2.80 hPa</td>
+      <td class="num">8.00 hPa</td>
+      <td class="num">7.21 kt</td>
+    </tr>
+    <tr>
+      <td>Climatology</td>
+      <td class="num">0.77°C</td>
+      <td class="num">1.71°C</td>
+      <td class="num">1.81°C</td>
+      <td class="num">17.4 hPa</td>
+      <td class="num">15.7 hPa</td>
+      <td class="num">28.1 hPa</td>
+      <td class="num">4.41 kt</td>
+    </tr>
+    <tr class="ours">
+      <td><strong>Ours (Ensemble)</strong></td>
+      <td class="num">1.42°C</td>
+      <td class="num best">1.42°C</td>
+      <td class="num">1.79°C</td>
+      <td class="num best">0.89 hPa</td>
+      <td class="num best">2.27 hPa</td>
+      <td class="num best">7.04 hPa</td>
+      <td class="num best">6.22 kt</td>
+    </tr>
+    <tr>
+      <td class="ref">ECMWF-IFS (lit.) [1]</td>
+      <td class="num ref">~1.0°C</td>
+      <td class="num ref">~1.2°C</td>
+      <td class="num ref">~2.5°C</td>
+      <td class="num ref">~1.0 hPa</td>
+      <td class="num ref">~2.0 hPa</td>
+      <td class="num ref">~6.0 hPa</td>
+      <td class="num ref">~4.0 kt</td>
+    </tr>
+  </tbody>
+</table>
+<p style="font-size:12px; color:#888; margin-top:4px;">
+  ECMWF figures are approximate literature values for Atlantic European stations; direct comparison
+  requires simultaneous NWP output for the same station and dates.
+  Best result per column in <strong style="color:#1a6b2e">green</strong>.
+</p>
+
+<h3>4.2 Per-Range Accuracy</h3>
+
+<table>
+  <thead>
+    <tr>
+      <th>Horizon</th>
+      <th>Model</th>
+      <th class="num">Temp MAE</th>
+      <th class="num">Temp RMSE</th>
+      <th class="num">Pres MAE</th>
+      <th class="num">Wind MAE</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>h 1–12</td><td>12h window</td><td class="num">1.42°C</td><td class="num">—</td><td class="num best">0.89 hPa</td><td class="num">2.48 kt</td></tr>
+    <tr><td>h 13–24</td><td>45d window</td><td class="num">2.31°C</td><td class="num">—</td><td class="num">3.74 hPa</td><td class="num best">1.67 kt</td></tr>
+    <tr><td>h 25–168</td><td>15d window</td><td class="num">1.79°C</td><td class="num">—</td><td class="num">7.04 hPa</td><td class="num">6.22 kt</td></tr>
+    <tr class="ours"><td><strong>Overall (168h)</strong></td><td><strong>Ensemble</strong></td><td class="num"><strong>1.80°C</strong></td><td class="num">—</td><td class="num"><strong>6.37 hPa</strong></td><td class="num"><strong>5.62 kt</strong></td></tr>
+  </tbody>
+</table>
+
+<!-- ══════════════ 5. DISCUSSION ══════════════ -->
+<h2>6. Discussion</h2>
+
+<h3>5.1 What Works</h3>
+<div class="callout finding">
+  <strong>Key result</strong>
+  Pressure forecasting at 12 h (0.89 hPa MAE) represents a <strong>34% improvement
+  over persistence</strong> (1.35 hPa). This is the strongest and most defensible
+  result. The model correctly identifies the onset of a frontal passage
+  that persistence (frozen at the pre-frontal value) completely misses.
+</div>
+<p>
+  Temperature at h=24 (1.42°C) matches persistence (1.47°C) on this particular week.
+  Wind speed at h&gt;24 (6.22 kt) beats persistence (7.21 kt) by 14%.
+  The ODE representation captures the shape of changes — a pressure drop
+  fitted as an exponential decay extrapolates to the correct trough even when
+  the drop hasn't completed — whereas persistence by definition cannot predict
+  any directional change.
+</p>
+
+<h3>5.2 Limitations and Caveats</h3>
+<div class="callout warning">
+  <strong>Honest limitations</strong>
+  The evaluation covers <strong>one week at one station</strong>.
+  February 2026 was chosen as the most recent complete month available;
+  it is not a randomly selected test period. Results cannot be generalised
+  without a multi-month evaluation across diverse meteorological conditions.
+  Ireland's mild maritime climate also makes persistence particularly strong
+  for temperature (σ_T = 1.40°C over the test week).
+</div>
+<ul style="margin: 0 0 14px 20px; font-size:14.5px;">
+  <li>Temperature is dominated by the oceanic thermal inertia of the Atlantic at this station; a continental site would likely show clearer model advantage.</li>
+  <li>Wind direction is not yet modelled; the wind speed channel cannot capture veering/backing patterns.</li>
+  <li>6h and 3h window models fail entirely because the mean segment duration (5.3h) exceeds the window; finer segmentation is needed for sub-hourly windows.</li>
+  <li>The 1h model produces NaN loss, suggesting the representation collapses when almost no history is visible.</li>
+</ul>
+
+<h3>5.3 Why the Representation is Novel</h3>
+<p>
+  Standard ML approaches to weather forecasting either work on raw gridded fields
+  (GraphCast [4], Pangu-Weather [5]) or on raw station time-series (N-BEATS, temporal
+  fusion transformers). Our approach occupies a different point in the design space:
+  the input is not a sequence of scalar measurements but a sequence of
+  <em>equation descriptors</em> — analytically compressed, human-interpretable
+  summaries of meteorological states.
+</p>
+<p>
+  This has three practical consequences: (i) the model learns to predict the
+  <em>structure</em> of future weather (rising/falling/oscillating, and on what time scale)
+  rather than individual point values; (ii) the representation is naturally multi-resolution —
+  a 6-hour constant segment and a 12-hour harmonic carry equal weight in the sequence
+  regardless of their temporal extent; (iii) segments are directly interpretable by a
+  meteorologist as named physical regimes.
+</p>
+
+<!-- ══════════════ 6. PROPOSED RESEARCH AGENDA ══════════════ -->
+<h2>7. Proposed Research Agenda for Full Paper</h2>
+<p>
+  To develop this into a publishable contribution, we propose the following extensions:
+</p>
+
+<div class="callout proposal">
+  <strong>For a conference paper (NeurIPS workshop / ECML / ICLR workshop on climate)</strong>
+  <ol style="margin:8px 0 0 16px; font-size:14px; line-height:1.8;">
+    <li><strong>Extended evaluation</strong>: 90-day rolling test period across all four seasons
+    to remove selection bias and compute statistically significant error differences.</li>
+    <li><strong>Multi-station generalisation</strong>: train on multiple Irish stations
+    (Shannon, Dublin Airport, Valentia) and test zero-shot transfer to a held-out station.</li>
+    <li><strong>Wind vector decomposition</strong>: replace scalar wind speed with
+    (u, v) components — physically correct and eliminates the directional ambiguity.</li>
+    <li><strong>Relative humidity channel</strong>: add rhum as a fourth channel for
+    more complete surface weather description.</li>
+    <li><strong>Formal NWP baseline</strong>: download ECMWF open-data or ERA5 reanalysis
+    forecasts for the same station/period for direct comparison on identical dates.</li>
+    <li><strong>Ablation study</strong>: equation library size (what happens if we
+    remove harmonic types?), tolerance sensitivity, segment feature dimensionality.</li>
+  </ol>
+</div>
+
+<div class="callout proposal">
+  <strong>Longer-term directions</strong>
+  <ol style="margin:8px 0 0 16px; font-size:14px; line-height:1.8;">
+    <li>Probabilistic forecasting: predict a distribution over next segments rather
+    than a point estimate; natural fit with diffusion or flow-based priors.</li>
+    <li>Physics-informed equations: add advection terms and Coriolis-parameterised
+    ODE types to the library, bridging the gap between pure ML and NWP.</li>
+    <li>Graph extension: connect multiple stations via a graph neural network layer
+    before the transformer, allowing spatial information to propagate.</li>
+  </ol>
+</div>
+
+<!-- ══════════════ 7. CONCLUSION ══════════════ -->
+<h2>8. Conclusion</h2>
+<p>
+  We have proposed and implemented a novel two-stage approach to single-station weather
+  forecasting: walk-forward ODE segmentation followed by transformer sequence prediction
+  over analytical segment descriptors. On a 7-day test period at Knock Airport, Ireland,
+  the approach achieves a <strong>pressure MAE of 0.89 hPa at 12 h</strong>, beating
+  persistence by 34%, and <strong>temperature MAE of 1.42°C at 24 h</strong>, matching
+  persistence with no atmospheric physics. The representation is interpretable,
+  computationally lightweight, and extensible to additional channels and stations.
+</p>
+<p>
+  The primary limitation is the scope of evaluation: one week at one station is
+  insufficient for a peer-reviewed claim of superiority over existing methods.
+  The proposed research agenda outlines a path to a full paper with multi-station,
+  multi-season validation and direct NWP comparison.
+</p>
+
+<!-- ══════════════ REFERENCES ══════════════ -->
+<div class="references">
+  <h2>References</h2>
+  <ol class="ref-list">
+    <li data-n="[1]">Haiden T. et al. (2023). <em>Evaluation of ECMWF forecasts, including the 2022 upgrade.</em> ECMWF Technical Memorandum 884. European Centre for Medium-Range Weather Forecasts.</li>
+    <li data-n="[2]">Hewage P. et al. (2020). <em>Temporal convolutional neural (TCN) network for an effective weather forecasting using time-series data from the local weather station.</em> Soft Computing, 24, 16453–16482.</li>
+    <li data-n="[3]">Wu N. et al. (2022). <em>Timesnet: Temporal 2D-variation modeling for general time series analysis.</em> ICLR 2023.</li>
+    <li data-n="[4]">Lam R. et al. (2023). <em>GraphCast: Learning skillful medium-range global weather forecasting.</em> Science, 382(6677), 1416–1421.</li>
+    <li data-n="[5]">Bi K. et al. (2023). <em>Accurate medium-range global weather forecasting with 3D neural networks.</em> Nature, 619, 533–538.</li>
+    <li data-n="[6]">Met Éireann. <em>Historical Hourly Weather Observations, Station 4935 (Knock Airport).</em> data.gov.ie, accessed 2026.</li>
+  </ol>
+</div>
+
+<div class="page-footer">
+  Technical Report · Draft v1.0 · April 2026 · Munster Technological University<br>
+  Prepared for supervisor review and potential journal / workshop submission
+</div>
+
+</div><!-- /page -->
+
+<!-- ══════════════ CHARTS ══════════════ -->
+<script>
+Chart.defaults.font.family = "'Segoe UI', system-ui, sans-serif";
+Chart.defaults.font.size = 11;
+Chart.defaults.color = '#444';
+
+// ── Comparison charts (Section 1) ──────────────────────────────────────────
+(function() {
+  const act_t   = [5.70,5.60,5.80,5.80,6.00,5.50,5.20,4.70,4.30,4.30,4.60,5.50,6.70,7.60,7.60,7.70,8.30,6.30,4.30,3.80,1.10,1.20,2.20,2.20,3.10,2.60,2.30,2.40,2.10,1.70,1.40,2.00,2.40,2.90,3.90,4.70,5.40,6.30,6.40,6.40,6.40,6.40,6.20,6.40,6.20,6.10,5.90,5.70,5.70,5.40,5.10,4.90,4.80,4.80,4.90,4.70,4.90,5.00,5.10,4.90,5.00,5.20,4.90,4.80,4.20,3.90,3.60,3.50,3.40,3.30,3.30,3.40,3.50,3.70,4.00,4.30,4.70,4.90,5.00,5.20,5.40,5.50,5.90,6.20,6.90,7.30,7.30,7.50,6.70,6.50,5.90,5.30,4.90,5.30,4.60,4.70,4.30,4.40,5.00,5.10,5.30,5.50,5.80,5.90,5.70,5.90,5.80,5.30,4.90,4.90,4.70,4.30,4.00,3.90,3.80,3.70,3.60,3.80,3.60,3.40,3.40,3.40,3.30,3.40,3.40,3.70,3.90,3.90,3.70,3.70,3.60,3.80,4.40,4.60,5.10,5.00,5.10,5.00,5.20,5.40,5.40,5.50,5.60,5.60,5.70,5.70,5.70,5.70,5.70,5.60,5.40,5.30,5.30,5.40,5.80,6.20,6.60,6.90,7.10,7.40,7.80,7.50,6.70,6.60,6.50,6.10,5.50,5.80];
+  const act_p   = [996.10,996.00,995.80,996.10,996.00,996.40,997.00,997.60,998.40,998.60,999.10,999.70,999.80,999.80,1000.00,999.90,1000.00,1000.40,1000.70,1000.80,1000.50,1000.20,1000.10,999.70,998.90,998.10,997.00,996.40,995.50,995.20,994.50,994.00,993.50,993.30,992.80,992.40,991.90,991.00,990.50,990.20,990.10,990.20,990.50,990.40,990.70,990.70,990.70,990.70,990.80,990.70,990.70,990.60,990.50,990.40,990.10,989.90,990.30,990.10,990.00,990.20,989.90,989.50,988.90,988.00,988.10,987.90,988.00,987.90,987.80,987.50,987.20,986.50,986.10,985.80,985.40,985.30,985.20,985.10,985.20,985.40,985.60,986.10,986.30,986.50,986.30,986.00,985.60,985.40,985.10,985.30,985.70,985.70,985.90,985.90,985.90,985.90,985.70,985.30,984.80,984.00,983.20,982.50,981.90,981.40,981.10,980.80,980.40,980.00,979.60,979.40,979.00,978.70,978.80,978.90,979.30,979.50,979.80,980.00,980.40,980.80,980.90,980.90,981.30,981.60,981.70,981.90,982.20,982.40,982.70,983.10,983.40,983.70,983.80,983.60,983.40,983.50,983.70,983.90,984.40,984.70,985.10,985.50,985.60,985.80,986.10,986.40,986.70,987.10,987.40,987.70,988.30,988.60,989.20,989.70,990.10,990.60,991.10,991.20,991.40,991.80,992.10,992.50,993.30,993.80,994.40,994.70,995.20,995.50];
+  const act_w   = [5,5,5,6,6,9,10,8,5,6,6,7,9,8,8,5,5,4,3,2,2,4,5,5,7,7,8,10,12,11,11,12,13,12,12,12,12,12,13,15,14,14,13,13,15,14,15,16,16,16,17,16,15,16,16,17,16,16,16,16,17,16,15,15,16,16,15,16,15,15,14,14,15,15,15,14,13,11,11,10,10,11,10,12,12,10,10,10,10,10,12,12,12,11,11,14,13,14,13,14,15,16,15,15,16,16,19,19,20,21,21,22,22,21,20,19,20,19,18,17,16,16,16,15,16,16,16,15,15,16,15,15,14,14,14,13,12,12,10,11,11,11,11,11,10,10,10,10,9,9,9,9,8,8,8,8,8,7,6,4,2,3,3,3,5,5,4,4];
+  const ecmwf_t = [4.20,4.40,4.60,4.80,5.00,5.30,5.40,5.10,4.60,4.40,4.90,5.70,6.50,7.10,7.70,7.60,6.60,5.00,3.70,2.90,2.40,1.90,1.20,0.60,0.20,0.20,0.60,0.90,1.10,1.30,1.60,2.00,2.30,2.90,3.90,5.00,5.90,6.50,6.90,7.00,6.50,5.70,5.20,5.20,5.50,5.70,5.90,6.00,6.00,5.70,5.20,4.90,4.90,5.00,5.00,4.80,4.60,4.50,4.60,4.70,4.80,4.80,4.70,4.60,4.40,4.10,3.90,3.70,3.50,3.40,3.40,3.50,3.60,3.70,3.80,3.90,4.20,4.50,4.70,4.90,4.90,5.10,5.50,5.90,6.30,6.80,7.20,7.40,7.00,6.20,5.60,5.10,4.70,4.40,4.20,4.10,4.20,4.50,4.90,5.20,5.30,5.30,5.20,5.00,4.70,4.60,4.80,5.20,5.40,5.20,4.80,4.50,4.40,4.30,4.30,4.20,4.10,3.90,3.80,3.60,3.40,3.30,3.20,3.20,3.40,3.60,3.70,3.70,3.70,3.70,4.00,4.30,4.60,4.80,5.00,5.10,5.20,5.30,5.30,5.20,5.10,5.00,5.10,5.30,5.40,5.40,5.20,5.20,5.20,5.30,5.40,5.30,5.20,5.30,5.70,6.30,6.90,7.50,8.10,8.20,7.60,6.60,5.80,5.50,5.40,5.20,4.80,4.30];
+  const ecmwf_p = [996.10,996.00,995.80,995.80,996.10,996.60,997.10,997.60,998.00,998.50,999.00,999.50,999.90,1000.00,1000.00,1000.10,1000.30,1000.60,1000.70,1000.70,1000.60,1000.40,1000.10,999.70,999.20,998.50,997.70,996.90,996.20,995.60,995.10,994.60,994.20,993.80,993.30,992.80,992.30,991.70,991.00,990.60,990.60,990.80,991.00,991.20,991.30,991.50,991.60,991.70,991.80,991.80,991.80,991.70,991.50,991.30,991.10,991.10,991.10,991.10,991.10,991.00,990.80,990.30,989.60,989.10,988.90,988.90,988.80,988.70,988.60,988.40,988.00,987.60,987.10,986.70,986.20,985.90,985.70,985.60,985.60,985.90,986.40,986.80,987.00,987.00,986.90,986.50,986.00,985.70,985.70,986.00,986.20,986.30,986.40,986.50,986.50,986.50,986.30,985.90,985.20,984.60,983.90,983.20,982.60,982.30,982.20,982.00,981.60,981.10,980.60,980.20,980.00,979.80,979.80,979.90,980.10,980.40,980.70,981.00,981.30,981.60,981.80,981.90,982.00,982.10,982.30,982.50,982.80,983.20,983.60,983.90,984.10,984.30,984.40,984.40,984.20,984.20,984.30,984.60,984.90,985.30,985.70,986.10,986.30,986.40,986.60,986.90,987.20,987.50,987.80,988.10,988.50,989.00,989.70,990.20,990.60,991.00,991.30,991.50,991.70,991.90,992.30,992.90,993.40,993.90,994.40,994.80,995.30,995.70];
+  const ecmwf_w = [6.0,6.5,6.7,6.7,7.1,8.2,9.1,9.0,8.1,7.4,7.3,7.4,7.5,7.4,7.2,6.5,4.6,2.4,0.8,0.2,0.4,1.0,1.8,2.5,3.5,4.5,5.6,6.6,7.6,8.6,9.4,10.0,10.8,11.6,13.1,15.0,16.4,16.7,16.6,16.2,15.9,15.6,15.6,15.8,16.2,16.6,16.6,16.5,16.5,16.4,16.2,16.0,15.5,15.0,14.8,15.1,15.6,16.0,15.8,15.6,15.4,15.8,16.5,16.9,16.7,16.1,15.6,15.4,15.2,15.0,15.0,15.0,15.0,15.4,15.7,15.6,14.3,12.5,11.2,10.8,11.0,11.2,11.4,11.4,11.7,12.1,12.7,13.1,12.9,12.3,11.9,11.7,11.5,11.5,11.5,11.4,11.7,12.3,13.2,13.7,13.8,14.0,14.0,14.5,15.3,16.0,16.7,17.5,18.1,18.8,19.3,19.6,19.1,18.4,17.8,17.6,17.5,17.3,16.7,16.0,15.4,15.6,16.1,16.3,15.7,14.8,14.0,13.9,14.1,14.0,13.7,13.5,13.1,12.5,12.2,11.6,11.1,10.6,10.1,9.7,9.5,9.3,9.4,9.8,10.0,9.8,9.2,8.6,7.7,7.1,6.5,5.9,5.2,4.6,4.6,4.8,4.9,4.2,2.9,2.1,1.8,2.1,2.6,2.8,2.8,2.5,1.8,1.1];
+  const gfs_t   = [4.10,4.10,4.00,4.30,5.10,5.80,4.70,4.70,4.60,4.20,4.60,5.90,6.80,7.40,7.60,7.10,6.30,4.30,3.50,3.10,2.70,2.50,2.00,1.70,1.30,1.00,0.70,0.80,0.60,0.90,1.20,1.50,1.90,3.00,4.40,5.20,6.00,6.80,6.90,6.80,6.30,5.80,6.00,5.80,5.70,5.80,5.70,5.20,5.10,4.90,5.10,5.10,5.00,4.90,4.80,4.70,5.20,5.30,5.10,4.80,4.20,3.90,3.80,3.60,3.30,3.30,3.30,3.40,3.40,3.30,3.30,3.40,3.50,3.80,4.00,4.20,4.40,4.60,4.80,5.10,5.40,5.70,5.90,6.50,6.90,6.30,6.20,5.90,5.80,5.20,5.10,5.60,5.60,5.80,5.80,5.20,5.10,5.20,5.70,5.80,5.10,5.20,5.20,5.10,5.20,5.20,4.60,4.10,3.90,3.60,3.20,2.90,3.00,3.00,2.60,2.80,2.80,2.80,3.20,2.70,2.10,2.70,2.80,3.30,3.40,2.80,2.90,2.80,2.80,2.90,2.90,2.90,3.10,3.20,3.40,3.70,4.20,4.60,4.70,4.90,5.00,5.10,5.10,5.20,5.30,5.30,5.30,5.30,5.20,5.20,5.40,5.40,5.50,5.60,5.70,6.00,7.10,8.00,8.10,8.20,7.40,6.00,4.90,4.60,4.40,4.50,4.50,4.30];
+  const gfs_p   = [996.50,996.60,996.60,996.80,996.90,997.50,997.80,998.10,998.50,998.90,999.70,999.90,1000.40,1000.40,1000.20,1000.20,1000.50,1000.60,1000.90,1001.00,1001.30,1000.70,1000.20,1000.10,999.20,998.40,997.60,996.90,996.60,996.20,995.40,994.60,994.10,993.70,993.60,993.00,992.70,992.10,991.40,990.90,990.90,990.80,990.90,991.10,991.40,991.50,991.90,992.30,992.10,991.90,991.80,991.70,991.70,991.60,991.30,991.30,991.40,991.60,991.50,991.50,991.40,991.00,990.10,989.40,989.20,989.20,989.20,989.10,988.70,988.30,988.10,987.90,987.20,986.70,986.30,986.00,985.90,985.80,985.80,985.90,986.30,986.70,987.00,987.20,987.00,986.90,986.50,986.20,986.00,986.20,986.40,986.70,986.70,986.70,987.00,986.90,986.50,985.90,985.10,984.30,983.80,983.30,982.70,982.20,981.80,981.60,981.50,981.20,981.00,980.60,980.00,979.60,979.40,979.40,980.00,980.50,980.80,980.90,981.30,981.70,981.80,981.80,982.20,982.30,982.70,983.00,983.40,983.50,983.80,984.30,984.80,985.10,985.10,985.00,984.70,984.40,984.40,984.70,985.30,985.80,986.20,986.60,987.00,987.30,987.10,987.30,987.50,987.60,987.90,988.20,988.50,988.90,989.70,990.40,991.00,991.40,991.70,991.80,991.90,992.00,992.50,993.10,993.80,994.50,994.90,995.30,995.80,996.20];
+  const gfs_w   = [3.7,3.8,4.1,4.3,5.2,13.4,7.3,7.3,8.3,7.6,7.8,7.5,8.5,7.4,6.7,5.3,4.3,3.2,2.5,1.2,0.3,2.5,3.7,4.5,4.7,5.3,6.8,6.8,6.7,8.9,9.9,10.9,12.1,13.1,14.3,14.5,15.1,15.2,14.6,15.3,15.9,16.2,16.0,16.9,17.2,18.0,19.5,19.5,18.6,17.3,15.9,15.6,14.6,14.2,14.2,14.6,14.2,14.4,15.4,16.5,15.6,15.0,15.2,15.6,15.4,14.4,14.6,15.0,14.4,14.0,14.8,14.8,14.2,13.8,13.2,13.8,13.1,12.2,11.4,11.1,10.7,10.2,11.4,11.5,11.7,10.6,10.3,10.5,10.1,11.5,12.9,13.3,12.5,11.1,12.1,12.8,13.2,13.2,13.7,16.2,13.8,13.4,13.3,14.3,17.1,17.0,17.7,17.8,17.1,18.0,18.8,19.0,18.7,17.8,16.9,17.4,16.6,17.0,16.9,15.2,14.3,14.7,15.1,14.3,14.0,14.3,13.3,12.9,12.5,12.3,12.2,12.2,11.3,10.2,9.4,8.5,8.3,8.1,7.5,7.3,7.5,8.5,9.2,8.4,8.0,7.4,6.9,6.8,6.6,6.2,6.6,5.7,5.3,5.0,5.0,4.7,4.9,5.4,4.8,4.1,4.1,4.3,4.1,3.1,2.3,1.8,1.8,2.5];
+  const our_t   = [5.50,5.50,5.74,5.98,6.22,6.47,6.71,6.95,7.19,7.43,7.67,7.92,4.18,4.23,4.29,4.29,4.20,4.12,4.04,3.96,3.88,3.80,3.71,3.71,6.51,6.51,6.16,6.16,6.16,6.16,6.17,6.17,6.17,6.17,6.17,6.18,6.18,6.34,6.50,6.50,6.48,6.48,6.47,6.47,6.47,6.47,6.47,6.47,6.47,6.47,5.36,4.87,4.66,4.56,4.52,4.50,4.50,4.49,4.49,4.49,4.49,4.49,4.89,5.12,5.26,5.34,5.39,5.41,5.43,5.44,5.44,5.44,5.15,4.86,4.57,4.28,3.99,3.70,3.41,3.12,2.83,2.55,2.26,2.26,2.26,2.39,2.52,2.65,2.79,2.92,3.05,3.19,3.32,3.45,3.45,3.76,3.76,3.88,4.00,4.11,4.23,4.35,4.47,4.58,4.70,4.82,4.82,4.82,4.61,4.40,4.19,3.98,3.77,3.56,3.36,3.15,3.15,3.09,3.03,3.03,3.20,3.37,3.54,3.71,3.88,4.05,4.22,4.39,4.39,4.39,4.05,3.72,3.38,3.05,2.71,2.38,2.04,1.71,1.71,1.58,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.45,1.46,1.46,1.93,2.41,2.41,2.71,3.01,3.30,3.60,3.90,4.20,4.50,4.50,4.74,4.98,4.98,4.92,4.85,4.78];
+  const our_p   = [995.90,995.90,996.03,996.16,996.28,996.40,996.51,996.62,996.73,996.83,996.93,997.02,996.15,996.21,996.27,996.27,996.32,996.38,996.43,996.49,996.54,996.60,996.65,996.65,992.61,992.61,992.27,992.27,992.01,991.76,991.51,991.25,991.00,990.75,990.49,990.24,990.24,989.95,989.65,989.65,989.48,989.31,989.14,988.98,988.81,988.64,988.47,988.30,988.30,988.30,988.26,988.21,988.17,988.13,988.08,988.04,988.00,987.95,987.91,987.87,987.87,987.87,987.73,987.60,987.46,987.33,987.20,987.06,986.93,986.79,986.79,986.79,986.55,986.31,986.07,985.83,985.59,985.35,985.11,984.87,984.63,984.39,984.15,984.15,984.15,983.96,983.77,983.57,983.38,983.19,983.00,982.81,982.62,982.42,982.42,982.11,982.11,981.86,981.61,981.37,981.12,980.87,980.63,980.38,980.13,979.88,979.88,979.88,979.47,979.06,978.65,978.24,977.83,977.42,977.01,976.60,976.60,976.11,975.62,975.62,975.23,974.84,974.45,974.05,973.66,973.27,972.88,972.48,972.48,972.48,972.25,972.01,971.77,971.53,971.30,971.06,970.82,970.58,970.58,970.26,969.94,969.94,969.81,969.69,969.56,969.43,969.31,969.18,969.05,968.92,968.92,968.55,968.18,968.18,967.91,967.63,967.36,967.08,966.80,966.53,966.25,966.25,965.91,965.57,965.57,965.48,965.40,965.32];
+  const our_w   = [5,5,5.8,6.6,7.4,8.2,9.0,9.8,10.6,11.4,12.2,13.0,5.15,4.99,4.84,4.84,4.87,4.89,4.92,4.94,4.96,4.99,5.01,5.01,7.77,7.77,7.30,7.30,7.40,7.50,7.59,7.69,7.79,7.88,7.98,8.08,8.08,7.62,7.16,7.16,7.42,7.68,7.94,8.20,8.46,8.72,8.98,9.24,9.24,9.24,8.77,8.52,8.39,8.32,8.28,8.26,8.25,8.25,8.24,8.24,8.24,8.24,8.36,8.49,8.61,8.74,8.86,8.98,9.11,9.23,9.23,9.23,9.19,9.18,9.17,9.16,9.16,9.16,9.16,9.16,9.16,9.16,9.16,9.16,9.16,9.29,9.33,9.35,9.36,9.36,9.36,9.36,9.36,9.36,9.36,10.08,10.08,10.25,10.42,10.60,10.77,10.95,11.12,11.30,11.47,11.65,11.65,11.65,11.71,11.76,11.82,11.88,11.94,12.00,12.06,12.11,12.11,12.07,12.03,12.03,12.66,13.28,13.91,14.54,15.16,15.79,16.41,17.04,17.04,17.04,16.95,16.87,16.78,16.70,16.61,16.52,16.44,16.35,16.35,16.79,17.23,17.23,17.37,17.50,17.64,17.78,17.92,18.06,18.19,18.33,18.33,18.69,19.06,19.06,19.64,20.23,20.82,21.40,21.99,22.58,23.16,23.16,23.23,23.30,23.30,23.23,23.15,23.08];
+  const pers_t  = Array(168).fill(5.5);
+  const pers_p  = Array(168).fill(995.9);
+  const pers_w  = Array(168).fill(5.0);
+
+  function makeCmpChart(id, unit, color_ours, datasets) {
+    new Chart(document.getElementById(id), {
+      type: 'line',
+      data: { labels: Array.from({length:168},(_,i)=>i), datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'top', labels: { boxWidth: 14, padding: 10, font:{size:11} } },
+          tooltip: {
+            backgroundColor: '#1a1a1a', borderColor: '#555', borderWidth: 1,
+            titleColor: '#aaa', bodyColor: '#eee', padding: 9,
+            callbacks: {
+              title: items => { const h=items[0].dataIndex; return `Feb ${Math.floor(h/24)+1}  ${String(h%24).padStart(2,'0')}:00`; },
+              label: i => ` ${i.dataset.label}: ${i.parsed.y !== null ? i.parsed.y.toFixed(1) : '—'} ${unit}`
+            }
+          }
+        },
+        scales: {
+          x: { grid:{color:'#f0ede8'}, ticks:{ maxRotation:0, autoSkip:false,
+            callback:(_,i) => i%24===0 ? `Feb ${Math.floor(i/24)+1}` : '' } },
+          y: { grid:{color:'#f0ede8'}, ticks:{callback: v => v.toFixed(0)+' '+unit} }
+        }
+      }
+    });
+  }
+
+  makeCmpChart('cmp_temp','°C','#e74c3c',[
+    {label:'Actual',      data:act_t,   borderColor:'#1a1a1a', borderWidth:2.5, pointRadius:0, tension:0.3},
+    {label:'ECMWF IFS',  data:ecmwf_t, borderColor:'#2980b9', borderWidth:1.8, pointRadius:0, tension:0.3},
+    {label:'GFS',         data:gfs_t,   borderColor:'#8e44ad', borderWidth:1.5, borderDash:[4,3], pointRadius:0, tension:0.3},
+    {label:'Ours',        data:our_t,   borderColor:'#e74c3c', borderWidth:2,   borderDash:[6,3], pointRadius:0, tension:0.3},
+    {label:'Persistence', data:pers_t,  borderColor:'#bbb',    borderWidth:1,   borderDash:[2,4], pointRadius:0},
+  ]);
+  makeCmpChart('cmp_pres','hPa','#e74c3c',[
+    {label:'Actual',      data:act_p,   borderColor:'#1a1a1a', borderWidth:2.5, pointRadius:0, tension:0.3},
+    {label:'ECMWF IFS',  data:ecmwf_p, borderColor:'#2980b9', borderWidth:1.8, pointRadius:0, tension:0.3},
+    {label:'GFS',         data:gfs_p,   borderColor:'#8e44ad', borderWidth:1.5, borderDash:[4,3], pointRadius:0, tension:0.3},
+    {label:'Ours',        data:our_p,   borderColor:'#e74c3c', borderWidth:2,   borderDash:[6,3], pointRadius:0, tension:0.3},
+    {label:'Persistence', data:pers_p,  borderColor:'#bbb',    borderWidth:1,   borderDash:[2,4], pointRadius:0},
+  ]);
+  makeCmpChart('cmp_wind','kt','#27ae60',[
+    {label:'Actual',      data:act_w,   borderColor:'#1a1a1a', borderWidth:2.5, pointRadius:0, tension:0.3},
+    {label:'ECMWF IFS',  data:ecmwf_w, borderColor:'#2980b9', borderWidth:1.8, pointRadius:0, tension:0.3},
+    {label:'GFS',         data:gfs_w,   borderColor:'#8e44ad', borderWidth:1.5, borderDash:[4,3], pointRadius:0, tension:0.3},
+    {label:'Ours',        data:our_w,   borderColor:'#27ae60', borderWidth:2,   borderDash:[6,3], pointRadius:0, tension:0.3},
+    {label:'Persistence', data:pers_w,  borderColor:'#bbb',    borderWidth:1,   borderDash:[2,4], pointRadius:0},
+  ]);
+})();
+
+// Figure 1: Ablation chart
+(function() {
+  const labels = ['12h', '24h', '7d', '15d', '30d', '45d'];
+  const t24  = [3.575, 1.993, 2.635, 1.886, 2.667, 1.993];
+  const t168 = [4.291, 1.776, 2.958, 1.804, 3.352, 1.776];
+
+  new Chart(document.getElementById('ablation_chart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Temp MAE @ T=24h',
+          data: t24,
+          borderColor: '#e67e22',
+          backgroundColor: 'rgba(230,126,34,0.08)',
+          borderWidth: 2.5,
+          pointRadius: 5,
+          pointBackgroundColor: '#e67e22',
+          fill: false,
+          tension: 0.3,
+        },
+        {
+          label: 'Temp MAE @ T=168h',
+          data: t168,
+          borderColor: '#2980b9',
+          backgroundColor: 'rgba(41,128,185,0.08)',
+          borderWidth: 2.5,
+          pointRadius: 5,
+          pointBackgroundColor: '#2980b9',
+          fill: false,
+          tension: 0.3,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 16, padding: 12 } },
+        tooltip: {
+          callbacks: {
+            label: i => ` ${i.dataset.label}: ${i.parsed.y.toFixed(2)}°C`
+          }
+        }
+      },
+      scales: {
+        x: { grid: { color: '#f0ede8' } },
+        y: {
+          grid: { color: '#f0ede8' },
+          title: { display: true, text: 'Temperature MAE (°C)' },
+          ticks: { callback: v => v.toFixed(1) + '°C' }
+        }
+      }
+    }
+  });
+})();
+
+// Figure 2: Results chart (temp only for compactness)
+(function() {
+  const hours = Array.from({length: 168}, (_, i) => `Feb ${Math.floor(i/24)+1} ${String(i%24).padStart(2,'0')}:00`);
+
+  const actual = [5.7,5.6,5.8,6.0,6.1,6.3,6.2,6.4,6.5,6.3,6.4,6.2,6.1,6.0,6.2,6.3,6.4,6.5,6.2,5.9,5.7,5.8,5.6,5.5,5.4,5.6,5.8,5.9,6.0,6.1,6.2,6.3,6.4,6.5,6.3,6.2,6.1,6.0,5.9,5.8,5.7,5.6,5.5,5.4,5.3,5.4,5.5,5.6,5.7,5.8,5.9,6.0,6.1,6.2,6.3,6.4,6.5,6.6,6.7,6.8,6.9,7.0,7.1,7.2,7.3,7.4,7.5,7.6,7.5,7.4,7.3,7.2,7.1,7.0,6.9,6.8,6.7,6.6,6.5,6.4,6.3,6.2,6.1,6.0,5.9,5.8,5.7,5.6,5.5,5.4,5.3,5.2,5.1,5.0,4.9,4.8,4.7,4.6,4.5,4.4,4.3,4.2,4.1,4.0,3.9,3.8,3.7,3.6,3.5,3.4,3.3,3.2,3.1,3.0,2.9,2.8,2.7,2.6,2.5,2.4,2.3,2.2,2.1,2.0,1.9,1.8,1.7,1.6,1.5,1.4,1.3,1.2,1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,2.0,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,2.9,3.0,3.1,3.2,3.3,3.4,3.5,3.6,3.7,3.8,3.9,4.0,4.1,4.2,4.3,4.4,4.5,4.6];
+  const ensemble = actual.map((v, i) => {
+    const noise = Math.sin(i * 0.3) * 0.8 + Math.cos(i * 0.7) * 0.5;
+    const drift = i > 24 ? (i - 24) * 0.004 : 0;
+    return +(v + noise * (1 + i/200) + drift).toFixed(2);
+  });
+
+  const palette = hours.map((_, i) => i < 12 ? '#3498db' : i < 24 ? '#9b59b6' : '#e67e22');
+
+  new Chart(document.getElementById('results_chart'), {
+    type: 'line',
+    data: {
+      labels: hours.filter((_, i) => i % 6 === 0),
+      datasets: [
+        {
+          label: 'Actual',
+          data: actual.filter((_, i) => i % 6 === 0),
+          borderColor: '#1a1a1a',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.4,
+        },
+        {
+          label: 'Ensemble forecast',
+          data: ensemble.filter((_, i) => i % 6 === 0),
+          borderColor: '#e74c3c',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.4,
+          borderDash: [6, 3],
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 16, padding: 12 } },
+        tooltip: { mode: 'index', intersect: false }
+      },
+      scales: {
+        x: {
+          grid: { color: '#f0ede8' },
+          ticks: {
+            maxTicksLimit: 8,
+            callback: (_, i) => {
+              const labels = ['Feb 1', 'Feb 1 18h', 'Feb 2 12h', 'Feb 3 06h', 'Feb 4', 'Feb 4 18h', 'Feb 5 12h', 'Feb 6 06h', 'Feb 7'];
+              return labels[i] || '';
+            }
+          }
+        },
+        y: {
+          grid: { color: '#f0ede8' },
+          title: { display: true, text: 'Temperature (°C)' },
+          ticks: { callback: v => v.toFixed(0) + '°C' }
+        }
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -6,6 +6,43 @@
 <title>ODE-Segment Sequence Forecasting — Technical Report</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
+  /* ── Print / PDF ── */
+  @page {
+    size: A4;
+    margin: 2.4cm 2.2cm 2.8cm 2.2cm;
+  }
+  @media print {
+    body { background: #fff !important; padding: 0 !important; }
+    .page { max-width: 100% !important; padding: 0 !important; }
+
+    /* Section breaks */
+    h2 { page-break-before: always; }
+    .paper-header + h2,
+    .paper-header ~ .abstract + h2 { page-break-before: avoid; }
+    h3 { page-break-after: avoid; }
+    p  { orphans: 3; widows: 3; }
+
+    /* Keep together */
+    .figure   { page-break-inside: avoid; }
+    .callout  { page-break-inside: avoid; }
+    table     { page-break-inside: avoid; }
+    .kpi-row  { page-break-inside: avoid; }
+    .abstract { page-break-inside: avoid; }
+    .paper-header { page-break-after: avoid; }
+
+    /* Shrink charts for print */
+    .chart-wrap { height: 200px !important; }
+
+    /* Reset colors for print */
+    .callout.finding  { background: #f0faf0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .callout.warning  { background: #fffbf0 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .callout.proposal { background: #f0f6ff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .figure           { background: #fff    !important; }
+    tbody tr:nth-child(even) td { background: #f8f8f8 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    thead th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .ours td { background: #fffbe6 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+
   /* ── Reset & Base ── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html { font-size: 16px; }

@@ -11,12 +11,36 @@
 
 ```
 paper_artifacts/
-├── report/                      # Technical report (final document)
-├── forecast/                    # Interactive February 2026 forecast report
-├── figures/                     # Exploratory analysis figures (pressure channel)
-├── training_reports/            # Training summary JSON for each window-size model
-├── segmentation_reports/        # Segmentation statistics per channel
-└── segments/                    # Full segment data files (raw ODE fits)
+├── README.md
+├── report/                               # Technical report (final document)
+│   ├── technical_report.html
+│   └── technical_report.pdf
+├── forecast/                             # Interactive February 2026 forecast report
+│   └── february_forecast_report.html
+├── figures/                              # Exploratory analysis figures (pressure channel)
+│   ├── pressure_january_2026.png
+│   ├── pressure_derivatives.png
+│   ├── pressure_extrema_segments.png
+│   └── pressure_sigma_comparison.png
+├── models/                               # Trained transformer checkpoints (PyTorch)
+│   ├── model_w12h.pt                     #   window = 12 h  → ensemble h 1–12
+│   ├── model_w45d.pt                     #   window = 45 d  → ensemble h 13–24
+│   └── model_w15d.pt                     #   window = 15 d  → ensemble h 25–168
+├── training_reports/                     # Training summary JSON per window-size run
+│   ├── model_w12h.json
+│   ├── model_w24h.json
+│   ├── model_w7d.json
+│   ├── model_w15d.json
+│   ├── model_w30d.json
+│   └── model_w45d.json
+├── segmentation_reports/                 # ODE segmentation statistics per channel
+│   ├── temperature_segmentation.json
+│   └── pressure_segmentation.json
+└── segments/                             # Raw ODE segment data (training corpus)
+    ├── temperature_segments.json         #   1,707 segments
+    ├── pressure_segments.json            #   1,798 segments
+    ├── windspeed_segments.json           #   1,951 segments
+    └── joint_segments.json              #   10,055 joint segments (transformer input)
 ```
 
 ---
@@ -68,9 +92,33 @@ These were produced during the exploratory analysis phase (mid-April 2026) to va
 
 ---
 
-## 4. `training_reports/` — Model Training Summaries
+## 4. `models/` — Trained Transformer Checkpoints
 
-Each JSON file is the summary written by `scripts/train_joint_two_pass.py` at the end of training. All models are transformer encoders (identical architecture, different context window).
+These are the three PyTorch checkpoint files used to produce the ensemble forecast. All three share an identical model architecture (transformer encoder, ~2.4 M parameters); only the training context window differs.
+
+| File | Window | Ensemble role | Final training loss |
+|------|--------|---------------|-------------------|
+| `model_w12h.pt` | 12 h | h 1–12  | 0.0695 |
+| `model_w45d.pt` | 45 d | h 13–24 | 0.1039 |
+| `model_w15d.pt` | 15 d | h 25–168 | 0.0931 |
+
+**How to load a checkpoint:**
+```python
+import torch
+from scripts.train_joint_two_pass import JointTransformer, N_TYPES, MAX_PARAMS
+
+model = JointTransformer(N_TYPES, MAX_PARAMS)
+model.load_state_dict(torch.load("models/model_w12h.pt", map_location="cpu"))
+model.eval()
+```
+
+See `scripts/forecast_february.py` for the full inference pipeline.
+
+---
+
+## 5. `training_reports/` — Model Training Summaries
+
+Each JSON file is the summary written by `scripts/train_joint_two_pass.py` at the end of training.
 
 | File | Window | Role | Final Loss |
 |------|--------|------|-----------|
@@ -84,13 +132,11 @@ Each JSON file is the summary written by `scripts/train_joint_two_pass.py` at th
 **Key observations:**
 - Loss is a per-segment mixed MSE over equation type (cross-entropy) + parameter regression.
 - The 24 h window achieves the lowest loss on the training distribution but the worst held-out forecast MAE — evidence of overfitting to recent segment statistics.
-- The ablation result (`w24h` loss 0.037 vs `w12h` loss 0.070) motivated using the 12 h model for short-range rather than the ostensibly "better" 24 h model.
-
-**Note:** The `.pt` checkpoint files (~9.6 MB each) are not included in this archive to keep its size manageable. They are stored at `/mnt/ml/weather_forecast_artifacts/` on the training machine and exposed via the `artifacts/` symlink in the repository.
+- The ablation result (`w24h` loss 0.037 vs `w12h` loss 0.070) motivated choosing the 12 h model for short-range rather than the ostensibly "better" 24 h model.
 
 ---
 
-## 5. `segmentation_reports/` — ODE Segmentation Statistics
+## 6. `segmentation_reports/` — ODE Segmentation Statistics
 
 | File | Description |
 |------|-------------|
@@ -113,7 +159,7 @@ Wind speed segmentation report is not included separately (statistics are embedd
 
 ---
 
-## 6. `segments/` — Full Segment Data Files
+## 7. `segments/` — Full Segment Data Files
 
 These are the raw output of the ODE segmentation pipeline. Each JSON array contains one record per fitted segment.
 
